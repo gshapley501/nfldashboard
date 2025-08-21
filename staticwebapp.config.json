@@ -1,0 +1,18 @@
+{
+  "navigationFallback": {
+    "rewrite": "/index.html"
+  },
+  "routes": [
+    {
+      "route": "/espn/*",
+      "rewrite": "/api/proxy"
+    },
+    {
+      "route": "/espn-site/*",
+      "rewrite": "/api/proxy"
+    }
+  ],
+  "mimeTypes": {
+    ".jsx": "text/javascript"
+  }
+}
