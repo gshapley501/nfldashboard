@@ -1,46 +1,32 @@
 const url = require("url");
-const fetch = require("node-fetch"); // v2
+const fetch = require("node-fetch");
 
-// small sleep helper for retries
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 module.exports = async function (context, req) {
   try {
-    // Prefer explicit ?u=... (a full URL to ESPN). Fall back to x-ms-original-url (may be post-rewrite) and req.originalUrl as last resort.
     const q = req.query || {};
     let target = q.u;
 
     if (!target) {
-      // try to reconstruct from the original url header IF it contains the espn path (older SWA envs may include pre-rewrite, but not guaranteed)
       const original = req.headers["x-ms-original-url"] || req.originalUrl || "";
       const parsed = url.parse(original);
       const path = parsed.pathname || "";
-      // look for /espn/... or /espn-site/...
       const m = path.match(/\/espn(?:-site)?\/(.*)$/);
-      if (m && m[1]) {
-        target = `https://site.api.espn.com/${m[1]}${parsed.search || ""}`;
-      }
+      if (m && m[1]) target = `https://site.api.espn.com/${m[1]}${parsed.search || ""}`;
     }
 
-    if (!target) {
-      context.res = { status: 400, body: "Missing target (?u=) parameter." };
-      return;
-    }
+    if (!target) { context.res = { status: 400, body: "Missing target (?u=) parameter." }; return; }
 
-    // sanity-check
+    let parsedTarget;
     try {
-      const parsed = new URL(target);
+      parsedTarget = new URL(target);
       if (!/^([a-z]+:)?\/\//i.test(target)) throw new Error("not absolute");
-      if (!/\.espn\.com$/i.test(parsed.hostname)) {
-        context.res = { status: 400, body: "Only *.espn.com targets are allowed." };
-        return;
-      }
+      if (!/\.espn\.com$/i.test(parsedTarget.hostname)) { context.res = { status: 400, body: "Only *.espn.com targets are allowed." }; return; }
     } catch {
-      context.res = { status: 400, body: "Invalid target URL." };
-      return;
+      context.res = { status: 400, body: "Invalid target URL." }; return;
     }
 
-    // Fetch with small retry (ESPN sporadically 5xx). 3 attempts with backoff.
     let resp, lastErr;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -56,19 +42,31 @@ module.exports = async function (context, req) {
         });
         if (resp.ok) break;
         lastErr = new Error(`Upstream status ${resp.status}`);
-      } catch (e) {
-        lastErr = e;
-      }
+      } catch (e) { lastErr = e; }
       await sleep(250 * (attempt + 1));
     }
 
-    if (!resp) {
-      context.res = { status: 502, body: "No response from upstream." };
+    if (!resp) { context.res = { status: 502, body: "No response from upstream." }; return; }
+
+    const contentType = resp.headers.get("content-type") || "application/json";
+    const softParam = String((req.query && req.query.soft) || "") === "1";
+    const isScoreboard = /\/scoreboard(\?|$)/i.test(target);
+    const soft = softParam || isScoreboard;
+
+    if (soft && !resp.ok) {
+      context.res = {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "public, max-age=10",
+          "access-control-allow-origin": "*"
+        },
+        body: JSON.stringify({ ok: false, status: resp.status, events: [] })
+      };
       return;
     }
 
     const buf = await resp.buffer();
-    const contentType = resp.headers.get("content-type") || "application/json";
     context.res = {
       status: resp.status,
       headers: {

@@ -2,8 +2,5 @@
   "navigationFallback": {
     "rewrite": "/index.html"
   },
-  "routes": [],
-  "mimeTypes": {
-    ".jsx": "text/javascript"
-  }
+  "routes": []
 }
