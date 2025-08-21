@@ -1,15 +1,41 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** Endpoint helpers (proxied) */
+// Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
+function _ttlForEspnUrl(espnUrl){
+  try{
+    const u = new URL(espnUrl);
+    if(u.pathname.includes('/scoreboard')){
+      const d = u.searchParams.get('dates');
+      if(d && /^\d{8}$/.test(d)){
+        const Y=+d.slice(0,4), M=+d.slice(4,6)-1, D=+d.slice(6,8);
+        const day = new Date(Date.UTC(Y,M,D));
+        const today = new Date();
+        const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const diff = Math.floor((day - start)/86400000);
+        if (diff < -1) return 86400; // 1 day
+        if (diff === -1) return 300; // 5 min
+        if (diff === 0) return 30;   // 30s
+        return 1800;                 // 30 min future
+      }
+      return 600;
+    }
+  }catch{}
+  return 60;
+}
 function proxify(u){
   if(typeof u !== 'string') return u;
   if(u.startsWith('/espn/')){
-    const tail = u.replace(/^\/espn/,'');
-    return `/api/proxy?soft=1&u=${encodeURIComponent('https://site.api.espn.com' + tail)}`;
+    const tail = u.replace(/^\/espn/, '');
+    const espn = 'https://site.api.espn.com' + tail;
+    const h = _ttlForEspnUrl(espn);
+    return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
   }
   if(u.startsWith('/espn-site/')){
-    const tail = u.replace(/^\/espn-site/,'');
-    return `/api/proxy?soft=1&u=${encodeURIComponent('https://site.api.espn.com' + tail)}`;
+    const tail = u.replace(/^\/espn-site/, '');
+    const espn = 'https://site.api.espn.com' + tail;
+    const h = _ttlForEspnUrl(espn);
+    return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
   }
   return u;
 }
@@ -142,23 +168,42 @@ function StatusPill({ game }) {
 }
 
 /* Fetch helper (robust, proper AbortError) */
-async function fetchFirstOk(urls, init) {
+
+async function fetchFirstOk(urls, init){
+  // concurrent 'first 200 wins' with loser aborts
   let lastStatus = 0, lastText = "";
-  for (const u of urls) {
-    try {
-      const r = await fetch(proxify(u), init);
-      if (r.ok) return await r.json();
-      lastStatus = r.status;
-      try { lastText = await r.text(); } catch { lastText = ""; }
-      console.warn("[NFL] attempt failed", u, r.status);
-    } catch (e) {
-      if (e && e.name === "AbortError") throw e; // propagate aborts
-      lastStatus = 0; lastText = String(e || "");
-      console.warn("[NFL] attempt threw", u, e);
-    }
+  const local = new AbortController();
+  if (init && init.signal) {
+    if (init.signal.aborted) local.abort();
+    else init.signal.addEventListener("abort", ()=> local.abort(), { once: true });
   }
-  throw new Error(`Request failed (last status ${lastStatus}): ${lastText.slice(0,160)}`);
+  return await new Promise((resolve, reject)=>{
+    let pending = urls.length;
+    if (pending === 0) return reject(new Error("No URLs provided"));
+    const done = (err, data) => {
+      if (err) reject(err); else resolve(data);
+      try{ local.abort(); }catch{}
+    };
+    for (const u of urls) {
+      fetch(proxify(u), { ...init, signal: local.signal }).then(async (r)=>{
+        if (r.ok) {
+          try { const json = await r.json(); done(null, json); } catch (e) { done(e); }
+        } else {
+          lastStatus = r.status;
+          try { lastText = await r.text(); } catch {}
+          console.warn("[NFL] attempt failed", u, r.status);
+          if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
+        }
+      }).catch((e)=>{
+        if (e && e.name === "AbortError") return;
+        lastStatus = 0; lastText = String(e||"");
+        console.warn("[NFL] attempt threw", u, e);
+        if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
+      });
+    }
+  });
 }
+
 
 /* ESPN event -> simplified (with logo fallback & official team links) */
 function simplifyEspnEvent(ev) {
@@ -383,6 +428,40 @@ function tallyFromEvents(events, table){
   }
 }
 
+
+async function hasFinalsForWeek(season, week, signal){
+  try{
+    const data = await fetchWeekScoreboard(season, week, signal);
+    const evs = (data && data.events) || [];
+    for (const ev of evs){
+      const s = simplifyEspnEvent(ev);
+      if (s.isFinal && !s.isPreseason) return true;
+    }
+    return false;
+  }catch{ return false; }
+}
+async function discoverMaxCompletedWeek(season, signal){
+  let lo=1, hi=18, ans=0;
+  while(lo<=hi){
+    const mid = Math.floor((lo+hi)/2);
+    const ok = await hasFinalsForWeek(season, mid, signal);
+    if(ok){ ans=mid; lo=mid+1; } else { hi=mid-1; }
+  }
+  return ans;
+}
+function limitConcurrency(tasks, n){
+  let i=0, active=0; const out=new Array(tasks.length);
+  return new Promise((resolve)=>{
+    const next=()=>{
+      if(i===tasks.length && active===0) return resolve(Promise.all(out));
+      while(active<n && i<tasks.length){
+        const idx=i++; active++;
+        out[idx]=tasks[idx]().finally(()=>{ active--; next(); });
+      }
+    };
+    next();
+  });
+}
 function StandingsPanel({ season }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -399,16 +478,18 @@ function StandingsPanel({ season }) {
 
   useEffect(()=>{
     let live = true;
-    async function load({ background=false } = {}){
-      if(!background){ setLoading(true); setError(""); } else setRefreshing(true);
-      try {
-        const controller = new AbortController();
-        const promises = [];
-        for(let w=1; w<=18; w++){
-          promises.push(fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
-        }
-        const weeks = await Promise.all(promises);
-        const table = {}; // abbr -> {team, w,l,t}
+    
+  async function load({ background=false } = {}){
+    if(!background){ setLoading(true); setError(""); } else setRefreshing(true);
+    try {
+      const controller = new AbortController();
+      const upto = await discoverMaxCompletedWeek(season, controller.signal);
+      const tasks = [];
+      for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
+        tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
+      }
+      const weeks = await limitConcurrency(tasks, 6);
+      const table = {}; // abbr -> {team, w,l,t}
         for(const wk of weeks){
           if(!wk) continue;
           tallyFromEvents((wk && wk.events) || [], table);
@@ -446,7 +527,7 @@ function StandingsPanel({ season }) {
 
   return (
     <div style={{ display:"grid", gap:12 }}>
-      <h2 style={{ margin: 0 }}>Standings · {season}</h2>
+      <h2 style={{ margin: 0 }}>Standings · {season} (Regular Season, local aggregation)</h2>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
         <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
         {refreshing && <span className="pill pill-mini">Updating…</span>}
@@ -533,7 +614,7 @@ export default function App(){
         <header style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
             <h1 style={{ fontSize:28, margin:0 }}>NFL Daily Dashboard</h1>
-            <div style={{ color:"#64748b" }}>Scores & Standings</div>
+            <div style={{ color:"#64748b" }}>Scores & Standings (preseason labeled; excluded from standings)</div>
           </div>
           <Tabs value={tab} onChange={setTab} />
         </header>

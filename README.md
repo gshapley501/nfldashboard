@@ -1,1 +1,1 @@
-Patched build with soft scoreboard proxy.
+# NFL Dashboard (Azure SWA, perf tuned)
