@@ -1,6 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** Endpoint helpers (proxied) */
+// Convert relative /espn* URLs into explicit /api/proxy?u=<encoded ESPN URL>
+function proxify(u){
+  if(typeof u !== 'string') return u;
+  if(u.startsWith('/espn/')){
+    const tail = u.replace(/^\/espn/,'');
+    return `/api/proxy?u=${encodeURIComponent('https://site.api.espn.com' + tail)}`;
+  }
+  if(u.startsWith('/espn-site/')){
+    const tail = u.replace(/^\/espn-site/,'');
+    return `/api/proxy?u=${encodeURIComponent('https://site.api.espn.com' + tail)}`;
+  }
+  return u;
+}
+
 const scoreboardUrlsForDate = (iso) => {
   const d = yyyymmdd(iso);
   const q = `dates=${d}&region=us&lang=en`;
@@ -133,7 +147,7 @@ async function fetchFirstOk(urls, init) {
   let lastStatus = 0, lastText = "";
   for (const u of urls) {
     try {
-      const r = await fetch(u, init);
+      const r = await fetch(proxify(u), init);
       if (r.ok) return await r.json();
       lastStatus = r.status;
       try { lastText = await r.text(); } catch { lastText = ""; }
@@ -350,6 +364,17 @@ const DIVISIONS = {
 };
 function pct(w,l,t=0){ const g=w+l+t; return g? (w + 0.5*t)/g : 0; }
 
+function limitConcurrency(tasks, n){
+  let i=0, active=0; const out=[];
+  return new Promise((resolve)=>{
+    const next=()=>{
+      if(i===tasks.length && active===0) return resolve(Promise.all(out));
+      while(active<n && i<tasks.length){ const idx=i++; active++; out[idx]=tasks[idx]().finally(()=>{active--; next();}); }
+    };
+    next();
+  });
+}
+
 async function fetchWeekScoreboard(season, week, signal){
   const urls = scoreboardUrlsForWeek(season, week);
   return await fetchFirstOk(urls, { signal });
@@ -394,7 +419,7 @@ function StandingsPanel({ season }) {
         for(let w=1; w<=18; w++){
           promises.push(fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
         }
-        const weeks = await Promise.all(promises);
+        const weeks = await limitConcurrency(promises.map(p=>()=>p), 4);
         const table = {}; // abbr -> {team, w,l,t}
         for(const wk of weeks){
           if(!wk) continue;
@@ -435,7 +460,7 @@ function StandingsPanel({ season }) {
     <div style={{ display:"grid", gap:12 }}>
       <h2 style={{ margin: 0 }}>Standings · {season} (Regular Season, local aggregation)</h2>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        <span style={{ color:"#64748b", fontSize:12 }}>#Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
+        <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
         {refreshing && <span className="pill pill-mini">Updating…</span>}
       </div>
       {loading && <div style={{ color:"#475569" }}>Loading standings…</div>}
@@ -520,7 +545,7 @@ export default function App(){
         <header style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
             <h1 style={{ fontSize:28, margin:0 }}>NFL Daily Dashboard</h1>
-            <div style={{ color:"#64748b" }}>Scores & Standings #(preseason labeled; excluded from standings)</div>
+            <div style={{ color:"#64748b" }}>Scores & Standings (preseason labeled; excluded from standings)</div>
           </div>
           <Tabs value={tab} onChange={setTab} />
         </header>
