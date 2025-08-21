@@ -446,7 +446,7 @@ function StandingsPanel({ season }) {
 
   return (
     <div style={{ display:"grid", gap:12 }}>
-      <h2 style={{ margin: 0 }}>Standings · {season} (Regular Season, local aggregation)</h2>
+      <h2 style={{ margin: 0 }}>Standings · {season}</h2>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
         <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
         {refreshing && <span className="pill pill-mini">Updating…</span>}
@@ -533,7 +533,7 @@ export default function App(){
         <header style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
             <h1 style={{ fontSize:28, margin:0 }}>NFL Daily Dashboard</h1>
-            <div style={{ color:"#64748b" }}>Scores & Standings (preseason labeled; excluded from standings)</div>
+            <div style={{ color:"#64748b" }}>Scores & Standings</div>
           </div>
           <Tabs value={tab} onChange={setTab} />
         </header>
