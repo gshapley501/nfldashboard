@@ -1,7 +1,7 @@
+
 import React, { useEffect, useMemo, useRef, useState, memo } from "react";
 
 /** Endpoint helpers (proxied) */
-// Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
 function _ttlForEspnUrl(espnUrl){
   try{
     const u = new URL(espnUrl);
@@ -77,7 +77,6 @@ function startOfWeekISO(iso, weekStartsOn = 0) {
   d.setDate(d.getDate() - offset);
   return fmtDate(d);
 }
-
 function range7(isoStart){ const a=[]; for(let i=0;i<7;i++) a.push(addDays(isoStart,i)); return a; }
 
 /* Fonts */
@@ -160,7 +159,7 @@ const TEAM_URLS = {
   DAL:"https://www.dallascowboys.com", DEN:"https://www.denverbroncos.com", DET:"https://www.detroitlions.com", GB:"https://www.packers.com",
   HOU:"https://www.houstontexans.com", IND:"https://www.colts.com", JAX:"https://www.jaguars.com", KC:"https://www.chiefs.com",
   LAC:"https://www.chargers.com", LAR:"https://www.therams.com", LV:"https://www.raiders.com", MIA:"https://www.miamidolphins.com",
-  MIN:"https://www.vikings.com", NE:"https://www.patriots.com", NO:"https://www.neworleanssaints.com", NYG:"https://www.giants.com",
+  MIN:"https://www.vikings.com", NE:"https://www.patriots.com", NO:"https://www.neworleansaints.com", NYG:"https://www.giants.com",
   NYJ:"https://www.newyorkjets.com", PHI:"https://www.philadelphiaeagles.com", PIT:"https://www.steelers.com", SEA:"https://www.seahawks.com",
   SF:"https://www.49ers.com", TB:"https://www.buccaneers.com", TEN:"https://www.tennesseetitans.com", WAS:"https://www.commanders.com"
 };
@@ -187,7 +186,6 @@ function StatusPill({ game }) {
 
 /* Fetch helper (robust, proper AbortError) */
 async function fetchFirstOk(urls, init){
-  // concurrent 'first 200 wins' with loser aborts
   let lastStatus = 0, lastText = "";
   const local = new AbortController();
   if (init && init.signal) {
@@ -226,7 +224,6 @@ function simplifyEspnEvent(ev) {
   const competitors = comp?.competitors || [];
   const venue = comp?.venue?.fullName || ev?.venue?.fullName;
   const seasonType = ev?.season?.type || comp?.season?.type; // 1=pre,2=reg,3=post
-  const seasonTypeNum = Number(seasonType)
 
   const getSide = (homeAway) => {
     const c = competitors.find((x) => x.homeAway === homeAway) || {};
@@ -252,8 +249,6 @@ function simplifyEspnEvent(ev) {
   const sName = (status?.type?.name || "").toLowerCase();
   return {
     id: ev.id,
-    seasonType: seasonTypeNum,
-
     date: ev.date || comp.date,
     venue,
     status,
@@ -261,9 +256,8 @@ function simplifyEspnEvent(ev) {
     away,
     isFinal: sName === "status_final" || sName === "final",
     isLive: sName === "status_in_progress" || sName === "in",
-    isPreseason: seasonTypeNum === 1,
-    isPostseason: seasonTypeNum === 3,
-    isRegular: seasonTypeNum === 2,
+    isPreseason: Number(seasonType) === 1,
+    isPostseason: Number(seasonType) === 3,
   };
 }
 
@@ -301,12 +295,12 @@ function ScoresPanel({ date, setDate, tz }) {
   const weekStart = useMemo(() => startOfWeekISO(date, 0), [date]); // Sunday
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
 
-  // PHASED LOAD: show selected day first (fast), then hydrate the rest in background
   async function fetchDay(d, { background=false } = {}){
     const urls = scoreboardUrlsForDate(d);
     try{
       const data = await fetchFirstOk(urls, { signal: abortRef.current?.signal });
       const gamesAll = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+      // Include preseason, exclude postseason
       const games = gamesAll.filter(g=>!g.isPostseason);
       setGamesByDate((prev)=> ({ ...prev, [d]: games }));
       if(!background){ lc.set(`nfl_scores_${d}_v1`, games, 5*60*1000); }
@@ -335,7 +329,16 @@ function ScoresPanel({ date, setDate, tz }) {
     }finally{
       setLoading(false);
     }
-  }sable-next-line */ }, [weekStart]);
+  }
+
+  async function refreshWeekBackground(){
+    setRefreshing(true);
+    const days = weekDays;
+    await Promise.allSettled(days.map((d)=>fetchDay(d, { background:true })));
+    setRefreshing(false);
+  }
+
+  useEffect(()=>{ fetchScoresInitial(); }, [weekStart]);
   useEffect(()=>{
     const id = setInterval(()=>{ if(document.visibilityState==="visible") refreshWeekBackground(); }, 60000);
     const onVis = () => { if(document.visibilityState==="visible") refreshWeekBackground(); };
@@ -343,9 +346,16 @@ function ScoresPanel({ date, setDate, tz }) {
     return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [weekStart]); // eslint-disable-line
 
-  function passesFilter(g){ if(!g || g.isPostseason) return false; if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
+  function passesFilter(g){
+    if(!g || g.isPostseason) return false;
+    if(filter==="final") return g.isFinal;
+    if(filter==="live") return g.isLive;
+    if(filter==="upcoming") return !g.isFinal && !g.isLive;
+    return true;
+  }
   const flatSorted = useMemo(()=>{
     const all = weekDays.flatMap((d)=> (gamesByDate[d]||[]) );
+    // De-dupe by id in case ESPN returns a duplicate across days
     const byId = new Map();
     for(const g of all){ if(!g || !g.id) continue; if(!byId.has(g.id)) byId.set(g.id, g); }
     return Array.from(byId.values()).filter(passesFilter).sort((a,b)=> new Date(a.date) - new Date(b.date));
@@ -375,7 +385,7 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       </div>
 
-      {loading && <div style={{ color:"#475569" }}>Loading today’s games…</div>}
+      {loading && <div style={{ color:"#475569" }}>Loading games…</div>}
       {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
       {!loading && !error && flatSorted.length === 0 && (
@@ -614,7 +624,6 @@ function StandingsPanel({ season }) {
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
-                    
                   </tr>
                 ))}
               </tbody>
@@ -695,7 +704,7 @@ export default function App(){
           {tab==="standings" && <StandingsPanel season={season} />}
         </main>
         <footer style={{ marginTop:16, fontSize:12, color:"#64748b" }}>
-          Data via ESPN weekly scoreboards; preseason games are marked and excluded from standings.
+          Data via ESPN weekly scoreboards; preseason games are shown in Scores but excluded from Standings.
         </footer>
       </div>
     </div>
