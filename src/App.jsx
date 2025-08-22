@@ -60,21 +60,6 @@ const scoreboardUrlsForWeek = (season, week) => {
     `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q2}`,
     `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q1}`,
   ];
-
-const scoreboardUrlsForWeekTyped = (season, seasontype, week) => {
-  const st = Number(seasontype) || 2;
-  const q1 = `seasontype=${st}&week=${week}&region=us&lang=en`;
-  const q2 = `season=${season}&seasontype=${st}&week=${week}&region=us&lang=en`;
-  return [
-    `/espn/apis/site/v2/sports/football/nfl/scoreboard?${q2}`,
-    `/espn/apis/site/v2/sports/football/nfl/scoreboard?${q1}`,
-    `/espn/apis/v2/sports/football/nfl/scoreboard?${q2}`,
-    `/espn/apis/v2/sports/football/nfl/scoreboard?${q1}`,
-    `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q2}`,
-    `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q1}`,
-  ];
-};
-
 };
 
 /* Utils */
@@ -320,16 +305,10 @@ function ScoresPanel({ date, setDate, tz }) {
       const dayData = await fetchFirstOk(dayUrls, { signal: abortRef.current.signal });
       const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year || dayData?.events?.[0]?.season?.year;
       const week = dayData?.week?.number || dayData?.events?.[0]?.week?.number;
-      const seasontype = dayData?.season?.type || dayData?.leagues?.[0]?.season?.type || dayData?.events?.[0]?.season?.type || 2;
       let evs = [];
       if (season && week) {
-        const wkData = await fetchFirstOk(scoreboardUrlsForWeekTyped(season, seasontype, week), { signal: abortRef.current.signal });
+        const wkData = await fetchFirstOk(scoreboardUrlsForWeek(season, week), { signal: abortRef.current.signal });
         evs = (wkData?.events || []);
-      if (!evs || evs.length === 0) {
-        // fallback to daily within the week (covers preseason/edge cases)
-        const daily = await Promise.all(weekDays.map(d => fetchFirstOk(scoreboardUrlsForDate(d), { signal: abortRef.current.signal }).catch(()=>null)));
-        evs = daily.flatMap(d => (d?.events||[]));
-      }
       } else {
         // Fallback: fetch each day of the week and combine (handles odd cases like preseason)
         const daily = await Promise.all(weekDays.map(d => fetchFirstOk(scoreboardUrlsForDate(d), { signal: abortRef.current.signal }).catch(()=>null)));
@@ -462,7 +441,7 @@ const DIVISIONS = {
 function pct(w,l,t=0){ const g=w+l+t; return g? (w + 0.5*t)/g : 0; }
 
 async function fetchWeekScoreboard(season, week, signal){
-  const urls = scoreboardUrlsForWeekTyped(season, seasontype, week);
+  const urls = scoreboardUrlsForWeek(season, week);
   return await fetchFirstOk(urls, { signal });
 }
 function tallyFromEvents(events, table){
