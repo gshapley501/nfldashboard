@@ -226,6 +226,7 @@ function simplifyEspnEvent(ev) {
   const competitors = comp?.competitors || [];
   const venue = comp?.venue?.fullName || ev?.venue?.fullName;
   const seasonType = ev?.season?.type || comp?.season?.type; // 1=pre,2=reg,3=post
+  const seasonTypeNum = Number(seasonType)
 
   const getSide = (homeAway) => {
     const c = competitors.find((x) => x.homeAway === homeAway) || {};
@@ -251,6 +252,8 @@ function simplifyEspnEvent(ev) {
   const sName = (status?.type?.name || "").toLowerCase();
   return {
     id: ev.id,
+    seasonType: seasonTypeNum,
+
     date: ev.date || comp.date,
     venue,
     status,
@@ -258,8 +261,9 @@ function simplifyEspnEvent(ev) {
     away,
     isFinal: sName === "status_final" || sName === "final",
     isLive: sName === "status_in_progress" || sName === "in",
-    isPreseason: Number(seasonType) === 1,
-    isPostseason: Number(seasonType) === 3,
+    isPreseason: seasonTypeNum === 1,
+    isPostseason: seasonTypeNum === 3,
+    isRegular: seasonTypeNum === 2,
   };
 }
 
@@ -302,7 +306,8 @@ function ScoresPanel({ date, setDate, tz }) {
     const urls = scoreboardUrlsForDate(d);
     try{
       const data = await fetchFirstOk(urls, { signal: abortRef.current?.signal });
-      const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+      const gamesAll = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+      const games = gamesAll.filter(g=>!g.isPostseason);
       setGamesByDate((prev)=> ({ ...prev, [d]: games }));
       if(!background){ lc.set(`nfl_scores_${d}_v1`, games, 5*60*1000); }
     }catch(e){
@@ -318,28 +323,19 @@ function ScoresPanel({ date, setDate, tz }) {
     abortRef.current = new AbortController();
     setLoading(true); setError("");
     try{
-      const d = date;
-      // Immediate from cache if available
-      const cached = lc.get(`nfl_scores_${d}_v1`);
-      if (cached) setGamesByDate((prev)=> ({ ...prev, [d]: cached }));
-      await fetchDay(d);
-      // Background: rest of week (excluding d)
-      const rest = weekDays.filter(x=>x!==d);
-      Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
+      const days = weekDays;
+      // Preload any cached days immediately
+      for(const d of days){
+        const cached = lc.get(`nfl_scores_${d}_v1`);
+        if (cached) setGamesByDate((prev)=> ({ ...prev, [d]: cached }));
+      }
+      await Promise.allSettled(days.map((d)=>fetchDay(d)));
     }catch(e){
       if(e.name!=="AbortError") setError(e.message || "Failed to load scores");
     }finally{
       setLoading(false);
     }
-  }
-
-  async function refreshWeekBackground(){
-    setRefreshing(true);
-    const rest = weekDays;
-    Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
-  }
-
-  useEffect(()=>{ fetchScoresInitial(); /* eslint-disable-next-line */ }, [weekStart]);
+  }sable-next-line */ }, [weekStart]);
   useEffect(()=>{
     const id = setInterval(()=>{ if(document.visibilityState==="visible") refreshWeekBackground(); }, 60000);
     const onVis = () => { if(document.visibilityState==="visible") refreshWeekBackground(); };
