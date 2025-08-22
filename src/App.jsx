@@ -71,9 +71,13 @@ const prettyTime = (isoString, tz = Intl.DateTimeFormat().resolvedOptions().time
   try { return new Intl.DateTimeFormat(undefined,{timeZone:tz,hour:"numeric",minute:"2-digit"}).format(new Date(isoString)); } catch { return ""; }
 };
 function startOfWeekISO(iso, weekStartsOn = 0) {
-  const d=parseDate(iso); const day=d.getDay();
-  const diff = day < weekStartsOn ? 7 - (weekStartsOn - day) : day - weekStartsOn;
-  d.setDate(d.getDate()-diff); return fmtDate(d);
+  // Robust: always anchor to the prior/that-week 'weekStartsOn' day.
+  // For Sunday-start weeks, weekStartsOn = 0.
+  const d = parseDate(iso);
+  const day = d.getDay(); // 0=Sun ... 6=Sat
+  const offset = (day - weekStartsOn + 7) % 7;
+  d.setDate(d.getDate() - offset);
+  return fmtDate(d);
 }
 function range7(isoStart){ const a=[]; for(let i=0;i<7;i++) a.push(addDays(isoStart,i)); return a; }
 
