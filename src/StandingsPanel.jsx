@@ -1,6 +1,6 @@
 
 import React, { useEffect, useState } from "react";
-import { DIVISIONS, TEAM_URLS, pct, tallyFromEvents, limitConcurrency, discoverMaxCompletedWeek, fetchWeekScoreboard, lc } from "./standings-shared";
+import { DIVISIONS, TEAM_FULL, pct, tallyFromEvents, limitConcurrency, discoverMaxCompletedWeek, fetchWeekScoreboard, lc } from "./standings-shared";
 
 function StandingsPanel({ season }) {
   const [loading, setLoading] = useState(false);
@@ -35,7 +35,7 @@ function StandingsPanel({ season }) {
         for(const wk of weeks) { if(!wk) continue; tallyFromEvents((wk && wk.events)||[], table); }
         const groups = Object.entries(DIVISIONS).map(([name, abbrs])=>({
           name,
-          teams: abbrs.map((abbr)=> (table[abbr] ? table[abbr] : { team: { abbr, name: (TEAM_URLS[abbr] && TEAM_URLS[abbr].name) || abbr }, w:0, l:0, t:0 }))
+          teams: abbrs.map((abbr)=> (table[abbr] ? table[abbr] : { team: { abbr, name: TEAM_FULL[abbr] || abbr }, w:0, l:0, t:0 }))
             .sort((a,b)=> (b.w - a.w) || (a.l - b.l) || (b.t - a.t) || a.team.name.localeCompare(b.team.name))
         }));
         if(live) { setDivisions(groups); lc.set(ck, groups, 10*60*1000); }

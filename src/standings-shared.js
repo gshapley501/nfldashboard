@@ -1,4 +1,4 @@
-// Auto-generated shared helpers for StandingsPanel lazy chunk
+// Clean helpers (no JSX) for StandingsPanel
 export const DIVISIONS = {
   "AFC East": ["BUF","MIA","NE","NYJ"],
   "AFC North": ["BAL","CIN","CLE","PIT"],
@@ -9,22 +9,24 @@ export const DIVISIONS = {
   "NFC South": ["ATL","CAR","NO","TB"],
   "NFC West": ["ARI","LAR","SF","SEA"],
 };
-export const TEAM_URLS = {
-  ARI:"https://www.azcardinals.com", ATL:"https://www.atlantafalcons.com", BAL:"https://www.baltimoreravens.com", BUF:"https://www.buffalobills.com",
-  CAR:"https://www.panthers.com", CHI:"https://www.chicagobears.com", CIN:"https://www.bengals.com", CLE:"https://www.clevelandbrowns.com",
-  DAL:"https://www.dallascowboys.com", DEN:"https://www.denverbroncos.com", DET:"https://www.detroitlions.com", GB:"https://www.packers.com",
-  HOU:"https://www.houstontexans.com", IND:"https://www.colts.com", JAX:"https://www.jaguars.com", KC:"https://www.chiefs.com",
-  LAC:"https://www.chargers.com", LAR:"https://www.therams.com", LV:"https://www.raiders.com", MIA:"https://www.miamidolphins.com",
-  MIN:"https://www.vikings.com", NE:"https://www.patriots.com", NO:"https://www.neworleanssaints.com", NYG:"https://www.giants.com",
-  NYJ:"https://www.newyorkjets.com", PHI:"https://www.philadelphiaeagles.com", PIT:"https://www.steelers.com", SEA:"https://www.seahawks.com",
-  SF:"https://www.49ers.com", TB:"https://www.buccaneers.com", TEN:"https://www.tennesseetitans.com", WAS:"https://www.commanders.com"
+
+export const TEAM_FULL = {
+  ARI:"Arizona Cardinals", ATL:"Atlanta Falcons", BAL:"Baltimore Ravens", BUF:"Buffalo Bills",
+  CAR:"Carolina Panthers", CHI:"Chicago Bears", CIN:"Cincinnati Bengals", CLE:"Cleveland Browns",
+  DAL:"Dallas Cowboys", DEN:"Denver Broncos", DET:"Detroit Lions", GB:"Green Bay Packers",
+  HOU:"Houston Texans", IND:"Indianapolis Colts", JAX:"Jacksonville Jaguars", KC:"Kansas City Chiefs",
+  LAC:"Los Angeles Chargers", LAR:"Los Angeles Rams", LV:"Las Vegas Raiders", MIA:"Miami Dolphins",
+  MIN:"Minnesota Vikings", NE:"New England Patriots", NO:"New Orleans Saints", NYG:"New York Giants",
+  NYJ:"New York Jets", PHI:"Philadelphia Eagles", PIT:"Pittsburgh Steelers", SEA:"Seattle Seahawks",
+  SF:"San Francisco 49ers", TB:"Tampa Bay Buccaneers", TEN:"Tennessee Titans", WAS:"Washington Commanders"
 };
-export lc = {
+
+export const lc = {
   get(key){
     try{
-      raw = localStorage.getItem(key);
+      const raw = localStorage.getItem(key);
       if(!raw) return null;
-      { data, exp } = JSON.parse(raw);
+      const { data, exp } = JSON.parse(raw);
       if(exp && Date.now() > exp) return null;
       return data;
     }catch{ return null; }
@@ -35,7 +37,9 @@ export lc = {
     }catch{}
   }
 };
+
 export function pct(w,l,t=0){ const g=w+l+t; return g? (w + 0.5*t)/g : 0; }
+
 export function tallyFromEvents(events, table){
   for(const ev of events){
     const s = simplifyEspnEvent(ev);
@@ -44,7 +48,14 @@ export function tallyFromEvents(events, table){
     if (typeof a.score !== "number" || typeof h.score !== "number") continue;
     const away = a.abbr, home = h.abbr;
     if(!away || !home) continue;
-    table[away] = table[away] || { team:a, w:0, l:0, t:0 }
+    table[away] = table[away] || { team:a, w:0, l:0, t:0 };
+    table[home] = table[home] || { team:h, w:0, l:0, t:0 };
+    if (a.score === h.score) { table[away].t++; table[home].t++; }
+    else if (a.score > h.score) { table[away].w++; table[home].l++; }
+    else { table[home].w++; table[away].l++; }
+  }
+}
+
 export function limitConcurrency(tasks, n){
   let i=0, active=0; const out=new Array(tasks.length);
   return new Promise((resolve)=>{
@@ -52,13 +63,86 @@ export function limitConcurrency(tasks, n){
       if(i===tasks.length && active===0) return resolve(Promise.all(out));
       while(active<n && i<tasks.length){
         const idx=i++; active++;
-        out[idx]=tasks[idx]().finally(()=>{ active--; next(); }
+        out[idx]=tasks[idx]().finally(()=>{ active--; next(); });
+      }
+    };
+    next();
+  });
+}
+
 export function discoverMaxCompletedWeek(season, signal){
   let lo=1, hi=18, ans=0;
   while(lo<=hi){
     const mid = Math.floor((lo+hi)/2);
     const ok = await hasFinalsForWeek(season, mid, signal);
-    if(ok){ ans=mid; lo=mid+1; }
+    if(ok){ ans=mid; lo=mid+1; } else { hi=mid-1; }
+  }
+  return ans;
+}
+
 export function fetchWeekScoreboard(season, week, signal){
   const urls = scoreboardUrlsForWeek(season, week);
-  return await fetchFirstOk(urls, { signal }
+  return await fetchFirstOk(urls, { signal });
+}
+
+export function hasFinalsForWeek(season, week, signal){
+  try{
+    const data = await fetchWeekScoreboard(season, week, signal);
+    const evs = (data && data.events) || [];
+    for (const ev of evs){
+      const s = simplifyEspnEvent(ev);
+      if (s.isFinal && !s.isPreseason) return true;
+    }
+    return false;
+  }catch{ return false; }
+}
+
+export function fetchFirstOk(urls, init){
+  // concurrent 'first 200 wins' with loser aborts
+  let lastStatus = 0, lastText = "";
+  const local = new AbortController();
+  if (init && init.signal) {
+    if (init.signal.aborted) local.abort();
+    else init.signal.addEventListener("abort", ()=> local.abort(), { once: true });
+  }
+  return await new Promise((resolve, reject)=>{
+    let pending = urls.length;
+    if (pending === 0) return reject(new Error("No URLs provided"));
+    const done = (err, data) => {
+      if (err) reject(err); else resolve(data);
+      try{ local.abort(); }catch{}
+    };
+    for (const u of urls) {
+      fetch(proxify(u), { ...init, signal: local.signal }).then(async (r)=>{
+        if (r.ok) {
+          try { const json = await r.json(); done(null, json); } catch (e) { done(e); }
+        } else {
+          lastStatus = r.status;
+          try { lastText = await r.text(); } catch {}
+          if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
+        }
+      }).catch((e)=>{
+        if (e && e.name === "AbortError") return;
+        lastStatus = 0; lastText = String(e||"");
+        if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
+      });
+    }
+  });
+}
+
+export function proxify(u){
+  if(typeof u !== 'string') return u;
+  if(u.startsWith('/espn/')){
+    const tail = u.replace(/^\/espn/, '');
+    const espn = 'https://site.api.espn.com' + tail;
+    const h = _ttlForEspnUrl(espn);
+    return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
+  }
+  if(u.startsWith('/espn-site/')){
+    const tail = u.replace(/^\/espn-site/, '');
+    const espn = 'https://site.api.espn.com' + tail;
+    const h = _ttlForEspnUrl(espn);
+    return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
+  }
+  return u;
+}

@@ -153,16 +153,8 @@ const STADIUM_URLS = {
 const getStadiumUrlForTeam = (abbr) => STADIUM_URLS[abbr] || null;
 
 /** Official team websites + full names */
-const TEAM_URLS = {
-  ARI:"https://www.azcardinals.com", ATL:"https://www.atlantafalcons.com", BAL:"https://www.baltimoreravens.com", BUF:"https://www.buffalobills.com",
-  CAR:"https://www.panthers.com", CHI:"https://www.chicagobears.com", CIN:"https://www.bengals.com", CLE:"https://www.clevelandbrowns.com",
-  DAL:"https://www.dallascowboys.com", DEN:"https://www.denverbroncos.com", DET:"https://www.detroitlions.com", GB:"https://www.packers.com",
-  HOU:"https://www.houstontexans.com", IND:"https://www.colts.com", JAX:"https://www.jaguars.com", KC:"https://www.chiefs.com",
-  LAC:"https://www.chargers.com", LAR:"https://www.therams.com", LV:"https://www.raiders.com", MIA:"https://www.miamidolphins.com",
-  MIN:"https://www.vikings.com", NE:"https://www.patriots.com", NO:"https://www.neworleanssaints.com", NYG:"https://www.giants.com",
-  NYJ:"https://www.newyorkjets.com", PHI:"https://www.philadelphiaeagles.com", PIT:"https://www.steelers.com", SEA:"https://www.seahawks.com",
-  SF:"https://www.49ers.com", TB:"https://www.buccaneers.com", TEN:"https://www.tennesseetitans.com", WAS:"https://www.commanders.com"
-};
+// TEAM_URLS removed (unused)
+
 const TEAM_FULL = {
   ARI:"Arizona Cardinals", ATL:"Atlanta Falcons", BAL:"Baltimore Ravens", BUF:"Buffalo Bills",
   CAR:"Carolina Panthers", CHI:"Chicago Bears", CIN:"Cincinnati Bengals", CLE:"Cleveland Browns",
