@@ -71,13 +71,9 @@ const prettyTime = (isoString, tz = Intl.DateTimeFormat().resolvedOptions().time
   try { return new Intl.DateTimeFormat(undefined,{timeZone:tz,hour:"numeric",minute:"2-digit"}).format(new Date(isoString)); } catch { return ""; }
 };
 function startOfWeekISO(iso, weekStartsOn = 0) {
-  // Robust: always anchor to the prior/that-week 'weekStartsOn' day.
-  // For Sunday-start weeks, weekStartsOn = 0.
-  const d = parseDate(iso);
-  const day = d.getDay(); // 0=Sun ... 6=Sat
-  const offset = (day - weekStartsOn + 7) % 7;
-  d.setDate(d.getDate() - offset);
-  return fmtDate(d);
+  const d=parseDate(iso); const day=d.getDay();
+  const diff = day < weekStartsOn ? 7 - (weekStartsOn - day) : day - weekStartsOn;
+  d.setDate(d.getDate()-diff); return fmtDate(d);
 }
 function range7(isoStart){ const a=[]; for(let i=0;i<7;i++) a.push(addDays(isoStart,i)); return a; }
 
@@ -350,7 +346,7 @@ function ScoresPanel({ date, setDate, tz }) {
   }, [gamesByDate, weekDays, filter]);
 
   const weekLabel = useMemo(()=>{
-    const start = new Date(weekStart); const end = new Date(parseDate(addDays(weekStart,6)));
+    const start = parseDate(weekStart); const end = parseDate(addDays(weekStart,6));
     const fmt = new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"});
     return `${fmt.format(start)} – ${fmt.format(end)}`;
   }, [weekStart]);
@@ -598,8 +594,8 @@ function StandingsPanel({ season }) {
           <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th></tr></thead>
+              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
+              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th><th style={numCell}>Pct</th></tr></thead>
               <tbody>
                 {d.teams.map((t)=>(
                   <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
@@ -612,7 +608,7 @@ function StandingsPanel({ season }) {
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
-                    
+                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
                   </tr>
                 ))}
               </tbody>
