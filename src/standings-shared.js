@@ -70,7 +70,7 @@ export function limitConcurrency(tasks, n){
   });
 }
 
-export function discoverMaxCompletedWeek(season, signal){
+export async function discoverMaxCompletedWeek(season, signal){
   let lo=1, hi=18, ans=0;
   while(lo<=hi){
     const mid = Math.floor((lo+hi)/2);
@@ -80,12 +80,12 @@ export function discoverMaxCompletedWeek(season, signal){
   return ans;
 }
 
-export function fetchWeekScoreboard(season, week, signal){
+export async function fetchWeekScoreboard(season, week, signal){
   const urls = scoreboardUrlsForWeek(season, week);
   return await fetchFirstOk(urls, { signal });
 }
 
-export function hasFinalsForWeek(season, week, signal){
+export async function hasFinalsForWeek(season, week, signal){
   try{
     const data = await fetchWeekScoreboard(season, week, signal);
     const evs = (data && data.events) || [];
@@ -97,7 +97,7 @@ export function hasFinalsForWeek(season, week, signal){
   }catch{ return false; }
 }
 
-export function fetchFirstOk(urls, init){
+export async function fetchFirstOk(urls, init){
   // concurrent 'first 200 wins' with loser aborts
   let lastStatus = 0, lastText = "";
   const local = new AbortController();
