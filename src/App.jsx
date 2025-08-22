@@ -356,7 +356,7 @@ function ScoresPanel({ date, setDate, tz }) {
       <div className="controls" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>setDate(addDays(weekStart,-7))}>← Prev Week</button>
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
-          <span style={{fontWeight:600}}>Week of {weekLabel}</span>
+          <span style={{fontWeight:600}}>{weekLabel}</span>
           <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
             <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
           </select>
@@ -594,8 +594,8 @@ function StandingsPanel({ season }) {
           <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th><th style={numCell}>Pct</th></tr></thead>
+              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/></colgroup>
+              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th></tr></thead>
               <tbody>
                 {d.teams.map((t)=>(
                   <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
@@ -608,7 +608,7 @@ function StandingsPanel({ season }) {
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
-                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
+                    
                   </tr>
                 ))}
               </tbody>
