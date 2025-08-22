@@ -283,7 +283,7 @@ const TeamRowWithScore = memo(function TeamRowWithScore({ team, role, leading, s
 });
 
 function ScoresPanel({ date, setDate, tz }) {
-  const [gamesByDate, setGamesByDate] = useState({});
+  const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -293,100 +293,46 @@ function ScoresPanel({ date, setDate, tz }) {
   const weekStart = useMemo(() => startOfWeekISO(date, 0), [date]); // Sunday
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
 
-  // PHASED LOAD: show selected day first (fast), then hydrate the rest in background
-  async function fetchDay(d, { background=false } = {}){
-    const urls = scoreboardUrlsForDate(d);
-    const data = await fetchFirstOk(urls, { signal: abortRef.current?.signal });
-    const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
-    setGamesByDate((prev)=> ({ ...prev, [d]: games }));
-    if(!background){
-      // cache day
-      lc.set(`nfl_scores_${d}_v1`, games, 5*60*1000);
-    }
-  }
+  function passesFilter(g){ if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
 
-  async function fetchScoresInitial(){
+  async function fetchWeekData(){
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
     setLoading(true); setError("");
     try{
-      const d = date;
-      const dayUrls = scoreboardUrlsForDate(d);
+      // First, fetch the selected day to discover season/week
+      const dayUrls = scoreboardUrlsForDate(date);
       const dayData = await fetchFirstOk(dayUrls, { signal: abortRef.current.signal });
-      const evsDay = (dayData?.events || []).map((ev)=>simplifyEspnEvent(ev));
-      setGamesByDate(prev=>({ ...prev, [d]: evsDay }));
-      lc.set(`nfl_scores_${d}_v1`, evsDay, 5*60*1000);
-      const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year;
-      const weekNum = dayData?.week?.number || dayData?.leagues?.[0]?.calendar?.week?.number;
-      if(season && weekNum){
-        const wkUrls = scoreboardUrlsForWeek(season, weekNum);
-        const wkData = await fetchFirstOk(wkUrls, { signal: abortRef.current.signal });
-        const wkEvents = (wkData?.events || []).map((ev)=>simplifyEspnEvent(ev));
-        const buckets = {};
-        for(const g of wkEvents){
-          const key = fmtDate(new Date(g.date));
-          (buckets[key] = buckets[key] || []).push(g);
-        }
-        setGamesByDate(prev=> ({ ...prev, ...buckets }));
-        for(const [k,v] of Object.entries(buckets)){
-          lc.set(`nfl_scores_${k}_v1`, v, 5*60*1000);
-        }
+      const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year || dayData?.events?.[0]?.season?.year;
+      const week = dayData?.week?.number || dayData?.events?.[0]?.week?.number;
+      let evs = [];
+      if (season && week) {
+        const wkData = await fetchFirstOk(scoreboardUrlsForWeek(season, week), { signal: abortRef.current.signal });
+        evs = (wkData?.events || []);
+      } else {
+        // Fallback: fetch each day of the week and combine (handles odd cases like preseason)
+        const daily = await Promise.all(weekDays.map(d => fetchFirstOk(scoreboardUrlsForDate(d), { signal: abortRef.current.signal }).catch(()=>null)));
+        evs = daily.flatMap(d => (d?.events||[]));
       }
-      const rest = weekDays.filter(x=>x!==d && !gamesByDate[x]);
-      Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
+      const simplified = evs.map(simplifyEspnEvent).filter(passesFilter).sort((a,b)=> new Date(a.date) - new Date(b.date));
+      setGames(simplified);
     }catch(e){
-      if(e.name!=="AbortError") setError(e.message || "Failed to load scores");
+      if(e?.name !== "AbortError") setError(e?.message || "Failed to load scores");
     }finally{
       setLoading(false);
-    }
-  }
-
-  }
-
-  async function refreshWeekBackground(){
-    setRefreshing(true);
-    try{
-      const d = date;
-      const dayUrls = scoreboardUrlsForDate(d);
-      const dayData = await fetchFirstOk(dayUrls, { signal: abortRef.current?.signal });
-      const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year;
-      const weekNum = dayData?.week?.number || dayData?.leagues?.[0]?.calendar?.week?.number;
-      if(season && weekNum){
-        const wkUrls = scoreboardUrlsForWeek(season, weekNum);
-        const wkData = await fetchFirstOk(wkUrls, { signal: abortRef.current?.signal });
-        const wkEvents = (wkData?.events || []).map((ev)=>simplifyEspnEvent(ev));
-        const buckets = {};
-        for(const g of wkEvents){
-          const key = fmtDate(new Date(g.date));
-          (buckets[key] = buckets[key] || []).push(g);
-        }
-        setGamesByDate(prev=> ({ ...prev, ...buckets }));
-        for(const [k,v] of Object.entries(buckets)){
-          lc.set(`nfl_scores_${k}_v1`, v, 5*60*1000);
-        }
-      }
-    } finally {
       setRefreshing(false);
     }
   }
 
+  async function refreshWeekBackground(){
+    setRefreshing(true);
+    fetchWeekData();
+  }
 
-  useEffect(()=>{ fetchScoresInitial(); /* eslint-disable-next-line */ }, [weekStart]);
-  useEffect(()=>{
-    const id = setInterval(()=>{ if(document.visibilityState==="visible") refreshWeekBackground(); }, 60000);
-    const onVis = () => { if(document.visibilityState==="visible") refreshWeekBackground(); };
-    document.addEventListener("visibilitychange", onVis);
-    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [weekStart]); // eslint-disable-line
-
-  function passesFilter(g){ if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
-  const flatSorted = useMemo(()=>{
-    const all = weekDays.flatMap((d)=> (gamesByDate[d]||[]) );
-    return all.filter(passesFilter).slice().sort((a,b)=> new Date(a.date) - new Date(b.date) );
-  }, [gamesByDate, weekDays, filter]);
+  useEffect(()=>{ fetchWeekData(); /* eslint-disable-next-line */ }, [weekStart, filter]);
 
   const weekLabel = useMemo(()=>{
-    const start = parseDate(weekStart); const end = parseDate(addDays(weekStart,6));
+    const start = new Date(parseDate(weekStart)); const end = new Date(parseDate(addDays(weekStart,6)));
     const fmt = new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"});
     return `${fmt.format(start)} – ${fmt.format(end)}`;
   }, [weekStart]);
@@ -398,7 +344,10 @@ function ScoresPanel({ date, setDate, tz }) {
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
           <span style={{fontWeight:600}}>{weekLabel}</span>
           <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
-            <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
+            <option value="all">All</option>
+            <option value="live">Live</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="final">Final</option>
           </select>
           <div style={{fontSize:12,color:"#64748b"}}>Times: {tz}</div>
           {refreshing && <span className="pill pill-mini">Updating…</span>}
@@ -409,10 +358,10 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       </div>
 
-      {loading && <div style={{ color:"#475569" }}>Loading today’s games…</div>}
+      {loading && <div style={{ color:"#475569" }}>Loading games…</div>}
       {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
-      {!loading && !error && flatSorted.length === 0 && (
+      {!loading && !error && games.length === 0 && (
         <div className="card" style={{ padding:24, textAlign:"center" }}>
           <div style={{ fontSize:48 }}>🏈</div>
           <div style={{ marginTop:8, color:"#334155", fontWeight:600 }}>No NFL games found for this week.</div>
@@ -420,7 +369,7 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       )}
 
-      {!error && flatSorted.map((g)=>{
+      {!error && games.map((g)=>{
         const showLead = g.isLive || g.isFinal;
         const homeScore = typeof g.home.score === "number" ? g.home.score : null;
         const awayScore = typeof g.away.score === "number" ? g.away.score : null;
@@ -434,7 +383,6 @@ function ScoresPanel({ date, setDate, tz }) {
               <TeamRowWithScore team={g.away} role="away" leading={awayLeading} size={32} />
             </div>
 
-            {/* Desktop / tablet details (right column) */}
             <div className="details-pane" style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
               <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                 <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
@@ -448,7 +396,6 @@ function ScoresPanel({ date, setDate, tz }) {
               <div style={{ fontSize:"0.85em" }}><span className="label">Location:</span>{" "}{stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}</div>
             </div>
 
-            {/* Mobile-only compact details table (below teams) */}
             <div className="details-mobile" style={{ padding:"0 12px 12px 12px" }}>
               <table className="mobile-table" style={{ width:"100%", borderCollapse:"collapse", fontSize:14 }}>
                 <tbody>
@@ -480,7 +427,6 @@ function ScoresPanel({ date, setDate, tz }) {
     </div>
   );
 }
-
 /* ---- Local Standings Aggregation ---- */
 const DIVISIONS = {
   "AFC East": ["BUF","MIA","NE","NYJ"],
@@ -634,8 +580,8 @@ function StandingsPanel({ season }) {
           <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th><th style={numCell}>Pct</th></tr></thead>
+              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/></colgroup>
+              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th></tr></thead>
               <tbody>
                 {d.teams.map((t)=>(
                   <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
@@ -648,7 +594,7 @@ function StandingsPanel({ season }) {
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
-                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
+                    
                   </tr>
                 ))}
               </tbody>
