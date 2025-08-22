@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState, memo } from "react";
+import React, { useEffect, useMemo, useRef, useState, memo, lazy, Suspense } from "react";
+const StandingsPanel = React.lazy(()=> import("./StandingsPanel.jsx"));
+
 
 /** Endpoint helpers (proxied) */
 // Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
@@ -377,7 +379,7 @@ function ScoresPanel({ date, setDate, tz }) {
       <div className="controls" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>setDate(addDays(weekStart,-7))}>← Prev Week</button>
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
-          <span style={{fontWeight:600}}>Week of {weekLabel}</span>
+          <span style={{fontWeight:600}}>{weekLabel}</span>
           <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
             <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
           </select>
@@ -528,120 +530,6 @@ function limitConcurrency(tasks, n){
     next();
   });
 }
-function StandingsPanel({ season }) {
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
-  const [divisions, setDivisions] = useState([]);
-
-  const numCell = {
-    padding: 8,
-    textAlign: "right",
-    fontVariantNumeric: "tabular-nums",
-    fontFeatureSettings: "'tnum' 1, 'lnum' 1",
-    whiteSpace: "nowrap",
-  };
-
-  useEffect(()=>{
-    let live = true;
-
-    // Use cache instantly if available
-    const ck = `nfl_standings_${season}_v1`;
-    const cached = lc.get(ck);
-    if (cached) setDivisions(cached);
-
-    async function load({ background=false } = {}){
-      if(!background){ setLoading(!cached); setError(""); } else setRefreshing(true);
-      try {
-        const controller = new AbortController();
-        const upto = await discoverMaxCompletedWeek(season, controller.signal);
-        const tasks = [];
-        for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
-          tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
-        }
-        const weeks = await limitConcurrency(tasks, 6);
-        const table = {}; // abbr -> {team, w,l,t}
-        for(const wk of weeks){
-          if(!wk) continue;
-          tallyFromEvents((wk && wk.events) || [], table);
-        }
-        const groups = Object.entries(DIVISIONS).map(([name, abbrs])=>{
-          const teams = abbrs.map((abbr)=>{
-            const row = table[abbr] || { team: { abbr, name: TEAM_FULL[abbr], logo: `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png` }, w:0,l:0,t:0 };
-            const tm = row.team;
-            return {
-              id: tm.id || abbr,
-              name: TEAM_FULL[abbr] || tm.name || abbr,
-              abbr,
-              logo: tm.logo || `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png`,
-              page: TEAM_URLS[abbr] || tm.page,
-              w: row.w, l: row.l, t: row.t,
-              pct: pct(row.w,row.l,row.t),
-            };
-          }).sort((a,b)=> b.pct - a.pct || b.w - a.w || a.l - b.l || a.name.localeCompare(b.name));
-          return { name, teams };
-        });
-        if(live){
-          setDivisions(groups);
-          lc.set(ck, groups, 10*60*1000); // cache for 10 minutes
-        }
-      } catch(e){
-        if(live && !background) setError(e.message || "Failed to load standings");
-      } finally {
-        if(!background) setLoading(false);
-        setRefreshing(false);
-      }
-    }
-    // kick it off
-    load();
-    const id = setInterval(()=>{ if(document.visibilityState==="visible") load({ background:true }); }, 5*60*1000);
-    const onVis = () => { if(document.visibilityState==="visible") load({ background:true }); };
-    document.addEventListener("visibilitychange", onVis);
-    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); live=false; };
-  }, [season]);
-
-  return (
-    <div style={{ display:"grid", gap:12 }}>
-      <h2 style={{ margin: 0 }}>Standings · {season}</h2>
-      <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
-        {refreshing && <span className="pill pill-mini">Updating…</span>}
-      </div>
-      {loading && <div style={{ color:"#475569" }}>Loading standings…</div>}
-      {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
-
-      {!loading && !error && divisions.map((d, i) => (
-        <div key={i} className="card" style={{ border:"1px solid #e2e8f0", borderRadius:16, overflow:"hidden", background:"#fff" }}>
-          <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
-          <div style={{ overflowX:"auto" }}>
-            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th><th style={numCell}>Pct</th></tr></thead>
-              <tbody>
-                {d.teams.map((t)=>(
-                  <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
-                    <td style={{ padding:8 }}>
-                      <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0 }}>
-                        <img loading="lazy" decoding="async" fetchpriority="low" src={t.logo} alt="logo" style={{width:20,height:20,objectFit:"contain",display:"block"}} />
-                        <a href={t.page || "#"} target="_blank" rel="noopener noreferrer" style={{ fontWeight:600, color:"inherit", textDecoration:"none" }}>{t.name}</a>
-                      </div>
-                    </td>
-                    <td style={numCell}>{t.w}</td>
-                    <td style={numCell}>{t.l}</td>
-                    <td style={numCell}>{t.t}</td>
-                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* Tabs + App */
 function Tabs({ value, onChange }) {
   const items = [{ id: "scores", label: "Scores" }, { id: "standings", label: "Standings" }];
   return (
@@ -707,7 +595,7 @@ export default function App(){
         </header>
         <main style={{ marginTop:16 }}>
           {tab==="scores" && <ScoresPanel tz={tz} date={date} setDate={setDate} />}
-          {tab==="standings" && <StandingsPanel season={season} />}
+          {tab==="standings" && <Suspense fallback={<div style={{padding:8}}>Loading standings…</div>}><StandingsPanel season={season} /></Suspense>}
         </main>
         <footer style={{ marginTop:16, fontSize:12, color:"#64748b" }}>
           Data via ESPN weekly scoreboards; preseason games are marked and excluded from standings.
