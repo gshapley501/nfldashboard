@@ -282,6 +282,21 @@ const TeamRowWithScore = memo(function TeamRowWithScore({ team, role, leading, s
   );
 });
 
+/* Simple concurrency limiter for background fetches */
+function limit(n){
+  let active = 0; const q = [];
+  const run = async (fn) => {
+    if (active >= n) await new Promise(r => q.push(r));
+    active++;
+    try { return await fn(); }
+    finally {
+      active--;
+      const next = q.shift(); if (next) next();
+    }
+  };
+  return run;
+}
+
 function ScoresPanel({ date, setDate, tz }) {
   const [gamesByDate, setGamesByDate] = useState({});
   const [loading, setLoading] = useState(false);
@@ -296,7 +311,10 @@ function ScoresPanel({ date, setDate, tz }) {
   // PHASED LOAD: show selected day first (fast), then hydrate the rest in background
   async function fetchDay(d, { background=false } = {}){
     const urls = scoreboardUrlsForDate(d);
-    const data = await fetchFirstOk(urls, { signal: abortRef.current?.signal });
+    // IMPORTANT FIX: background fetches use their own controller (not the shared one)
+    const controller = background ? new AbortController() : (abortRef.current || new AbortController());
+    if (!background) abortRef.current = controller;
+    const data = await fetchFirstOk(urls, { signal: controller.signal });
     const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
     setGamesByDate((prev)=> ({ ...prev, [d]: games }));
     if(!background){
@@ -304,6 +322,8 @@ function ScoresPanel({ date, setDate, tz }) {
       lc.set(`nfl_scores_${d}_v1`, games, 5*60*1000);
     }
   }
+
+  const runBgLimited = useMemo(()=> limit(3), []); // limit mobile parallelism
 
   async function fetchScoresInitial(){
     if (abortRef.current) abortRef.current.abort();
@@ -317,7 +337,7 @@ function ScoresPanel({ date, setDate, tz }) {
       await fetchDay(d);
       // Background: rest of week (excluding d)
       const rest = weekDays.filter(x=>x!==d);
-      Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
+      await Promise.allSettled(rest.map((x)=> runBgLimited(()=>fetchDay(x, { background:true })) ));
     }catch(e){
       if(e.name!=="AbortError") setError(e.message || "Failed to load scores");
     }finally{
@@ -328,7 +348,8 @@ function ScoresPanel({ date, setDate, tz }) {
   async function refreshWeekBackground(){
     setRefreshing(true);
     const rest = weekDays;
-    Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
+    await Promise.allSettled(rest.map((x)=> runBgLimited(()=>fetchDay(x, { background:true })) ));
+    setRefreshing(false);
   }
 
   useEffect(()=>{ fetchScoresInitial(); /* eslint-disable-next-line */ }, [weekStart]);
