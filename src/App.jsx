@@ -311,12 +311,28 @@ function ScoresPanel({ date, setDate, tz }) {
     setLoading(true); setError("");
     try{
       const d = date;
-      // Immediate from cache if available
-      const cached = lc.get(`nfl_scores_${d}_v1`);
-      if (cached) setGamesByDate((prev)=> ({ ...prev, [d]: cached }));
-      await fetchDay(d);
-      // Background: rest of week (excluding d)
-      const rest = weekDays.filter(x=>x!==d);
+      const dayUrls = scoreboardUrlsForDate(d);
+      const dayData = await fetchFirstOk(dayUrls, { signal: abortRef.current.signal });
+      const evsDay = (dayData?.events || []).map((ev)=>simplifyEspnEvent(ev));
+      setGamesByDate(prev=>({ ...prev, [d]: evsDay }));
+      lc.set(`nfl_scores_${d}_v1`, evsDay, 5*60*1000);
+      const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year;
+      const weekNum = dayData?.week?.number || dayData?.leagues?.[0]?.calendar?.week?.number;
+      if(season && weekNum){
+        const wkUrls = scoreboardUrlsForWeek(season, weekNum);
+        const wkData = await fetchFirstOk(wkUrls, { signal: abortRef.current.signal });
+        const wkEvents = (wkData?.events || []).map((ev)=>simplifyEspnEvent(ev));
+        const buckets = {};
+        for(const g of wkEvents){
+          const key = fmtDate(new Date(g.date));
+          (buckets[key] = buckets[key] || []).push(g);
+        }
+        setGamesByDate(prev=> ({ ...prev, ...buckets }));
+        for(const [k,v] of Object.entries(buckets)){
+          lc.set(`nfl_scores_${k}_v1`, v, 5*60*1000);
+        }
+      }
+      const rest = weekDays.filter(x=>x!==d && !gamesByDate[x]);
       Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
     }catch(e){
       if(e.name!=="AbortError") setError(e.message || "Failed to load scores");
@@ -325,11 +341,35 @@ function ScoresPanel({ date, setDate, tz }) {
     }
   }
 
+  }
+
   async function refreshWeekBackground(){
     setRefreshing(true);
-    const rest = weekDays;
-    Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
+    try{
+      const d = date;
+      const dayUrls = scoreboardUrlsForDate(d);
+      const dayData = await fetchFirstOk(dayUrls, { signal: abortRef.current?.signal });
+      const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year;
+      const weekNum = dayData?.week?.number || dayData?.leagues?.[0]?.calendar?.week?.number;
+      if(season && weekNum){
+        const wkUrls = scoreboardUrlsForWeek(season, weekNum);
+        const wkData = await fetchFirstOk(wkUrls, { signal: abortRef.current?.signal });
+        const wkEvents = (wkData?.events || []).map((ev)=>simplifyEspnEvent(ev));
+        const buckets = {};
+        for(const g of wkEvents){
+          const key = fmtDate(new Date(g.date));
+          (buckets[key] = buckets[key] || []).push(g);
+        }
+        setGamesByDate(prev=> ({ ...prev, ...buckets }));
+        for(const [k,v] of Object.entries(buckets)){
+          lc.set(`nfl_scores_${k}_v1`, v, 5*60*1000);
+        }
+      }
+    } finally {
+      setRefreshing(false);
+    }
   }
+
 
   useEffect(()=>{ fetchScoresInitial(); /* eslint-disable-next-line */ }, [weekStart]);
   useEffect(()=>{
