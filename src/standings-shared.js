@@ -1,4 +1,4 @@
-// Clean helpers (no JSX) for StandingsPanel
+// Pure JS helpers for Standings lazy chunk (no JSX)
 export const DIVISIONS = {
   "AFC East": ["BUF","MIA","NE","NYJ"],
   "AFC North": ["BAL","CIN","CLE","PIT"],
@@ -145,4 +145,26 @@ export function proxify(u){
     return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
   }
   return u;
+}
+
+export function _ttlForEspnUrl(espnUrl){
+  try{
+    const u = new URL(espnUrl);
+    if(u.pathname.includes('/scoreboard')){
+      const d = u.searchParams.get('dates');
+      if(d && /^\d{8}$/.test(d)){
+        const Y=+d.slice(0,4), M=+d.slice(4,6)-1, D=+d.slice(6,8);
+        const day = new Date(Date.UTC(Y,M,D));
+        const today = new Date();
+        const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const diff = Math.floor((day - start)/86400000);
+        if (diff < -1) return 86400; // 1 day
+        if (diff === -1) return 300; // 5 min
+        if (diff === 0) return 30;   // 30s
+        return 1800;                 // 30 min future
+      }
+      return 600;
+    }
+  }catch{}
+  return 60;
 }
