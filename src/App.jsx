@@ -71,10 +71,13 @@ const prettyTime = (isoString, tz = Intl.DateTimeFormat().resolvedOptions().time
   try { return new Intl.DateTimeFormat(undefined,{timeZone:tz,hour:"numeric",minute:"2-digit"}).format(new Date(isoString)); } catch { return ""; }
 };
 function startOfWeekISO(iso, weekStartsOn = 0) {
-  const d=parseDate(iso); const day=d.getDay();
-  const diff = day < weekStartsOn ? 7 - (weekStartsOn - day) : day - weekStartsOn;
-  d.setDate(d.getDate()-diff); return fmtDate(d);
+  const d = parseDate(iso);
+  const day = d.getDay(); // 0=Sun..6=Sat
+  const offset = (day - weekStartsOn + 7) % 7;
+  d.setDate(d.getDate() - offset);
+  return fmtDate(d);
 }
+
 function range7(isoStart){ const a=[]; for(let i=0;i<7;i++) a.push(addDays(isoStart,i)); return a; }
 
 /* Fonts */
@@ -256,6 +259,7 @@ function simplifyEspnEvent(ev) {
     isFinal: sName === "status_final" || sName === "final",
     isLive: sName === "status_in_progress" || sName === "in",
     isPreseason: Number(seasonType) === 1,
+    isPostseason: Number(seasonType) === 3,
   };
 }
 
@@ -283,7 +287,7 @@ const TeamRowWithScore = memo(function TeamRowWithScore({ team, role, leading, s
 });
 
 function ScoresPanel({ date, setDate, tz }) {
-  const [games, setGames] = useState([]);
+  const [gamesByDate, setGamesByDate] = useState({});
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -293,46 +297,66 @@ function ScoresPanel({ date, setDate, tz }) {
   const weekStart = useMemo(() => startOfWeekISO(date, 0), [date]); // Sunday
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
 
-  function passesFilter(g){ if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
+  // PHASED LOAD: show selected day first (fast), then hydrate the rest in background
+  async function fetchDay(d, { background=false } = {}){
+    const urls = scoreboardUrlsForDate(d);
+    try{
+      const data = await fetchFirstOk(urls, { signal: abortRef.current?.signal });
+      const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+      setGamesByDate((prev)=> ({ ...prev, [d]: games }));
+      if(!background){ lc.set(`nfl_scores_${d}_v1`, games, 5*60*1000); }
+    }catch(e){
+      setGamesByDate((prev)=> ({ ...prev, [d]: [] }));
+      if(!background){
+        setError(`Failed to load scores for ${d}: ${e?.message || e}`);
+      }
+    }
+  }
 
-  async function fetchWeekData(){
+  async function fetchScoresInitial(){
     if (abortRef.current) abortRef.current.abort();
     abortRef.current = new AbortController();
     setLoading(true); setError("");
     try{
-      // First, fetch the selected day to discover season/week
-      const dayUrls = scoreboardUrlsForDate(date);
-      const dayData = await fetchFirstOk(dayUrls, { signal: abortRef.current.signal });
-      const season = dayData?.season?.year || dayData?.leagues?.[0]?.season?.year || dayData?.events?.[0]?.season?.year;
-      const week = dayData?.week?.number || dayData?.events?.[0]?.week?.number;
-      let evs = [];
-      if (season && week) {
-        const wkData = await fetchFirstOk(scoreboardUrlsForWeek(season, week), { signal: abortRef.current.signal });
-        evs = (wkData?.events || []);
-      } else {
-        // Fallback: fetch each day of the week and combine (handles odd cases like preseason)
-        const daily = await Promise.all(weekDays.map(d => fetchFirstOk(scoreboardUrlsForDate(d), { signal: abortRef.current.signal }).catch(()=>null)));
-        evs = daily.flatMap(d => (d?.events||[]));
-      }
-      const simplified = evs.map(simplifyEspnEvent).filter(passesFilter).sort((a,b)=> new Date(a.date) - new Date(b.date));
-      setGames(simplified);
+      const d = date;
+      // Immediate from cache if available
+      const cached = lc.get(`nfl_scores_${d}_v1`);
+      if (cached) setGamesByDate((prev)=> ({ ...prev, [d]: cached }));
+      await fetchDay(d);
+      // Background: rest of week (excluding d)
+      const rest = weekDays.filter(x=>x!==d);
+      Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
     }catch(e){
-      if(e?.name !== "AbortError") setError(e?.message || "Failed to load scores");
+      if(e.name!=="AbortError") setError(e.message || "Failed to load scores");
     }finally{
       setLoading(false);
-      setRefreshing(false);
     }
   }
 
   async function refreshWeekBackground(){
     setRefreshing(true);
-    fetchWeekData();
+    const rest = weekDays;
+    Promise.allSettled(rest.map((x)=>fetchDay(x, { background:true }))).finally(()=> setRefreshing(false));
   }
 
-  useEffect(()=>{ fetchWeekData(); /* eslint-disable-next-line */ }, [weekStart, filter]);
+  useEffect(()=>{ fetchScoresInitial(); /* eslint-disable-next-line */ }, [weekStart]);
+  useEffect(()=>{
+    const id = setInterval(()=>{ if(document.visibilityState==="visible") refreshWeekBackground(); }, 60000);
+    const onVis = () => { if(document.visibilityState==="visible") refreshWeekBackground(); };
+    document.addEventListener("visibilitychange", onVis);
+    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, [weekStart]); // eslint-disable-line
+
+  function passesFilter(g){ if(!g || g.isPostseason) return false; if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
+  const flatSorted = useMemo(()=>{
+    const all = weekDays.flatMap((d)=> (gamesByDate[d]||[]) );
+    const byId = new Map();
+    for(const g of all){ if(!g || !g.id) continue; if(!byId.has(g.id)) byId.set(g.id, g); }
+    return Array.from(byId.values()).filter(passesFilter).sort((a,b)=> new Date(a.date) - new Date(b.date));
+  }, [gamesByDate, weekDays, filter]);
 
   const weekLabel = useMemo(()=>{
-    const start = new Date(parseDate(weekStart)); const end = new Date(parseDate(addDays(weekStart,6)));
+    const start = parseDate(weekStart); const end = parseDate(addDays(weekStart,6));
     const fmt = new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"});
     return `${fmt.format(start)} – ${fmt.format(end)}`;
   }, [weekStart]);
@@ -344,10 +368,7 @@ function ScoresPanel({ date, setDate, tz }) {
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
           <span style={{fontWeight:600}}>{weekLabel}</span>
           <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
-            <option value="all">All</option>
-            <option value="live">Live</option>
-            <option value="upcoming">Upcoming</option>
-            <option value="final">Final</option>
+            <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
           </select>
           <div style={{fontSize:12,color:"#64748b"}}>Times: {tz}</div>
           {refreshing && <span className="pill pill-mini">Updating…</span>}
@@ -358,10 +379,10 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       </div>
 
-      {loading && <div style={{ color:"#475569" }}>Loading games…</div>}
+      {loading && <div style={{ color:"#475569" }}>Loading today’s games…</div>}
       {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
-      {!loading && !error && games.length === 0 && (
+      {!loading && !error && flatSorted.length === 0 && (
         <div className="card" style={{ padding:24, textAlign:"center" }}>
           <div style={{ fontSize:48 }}>🏈</div>
           <div style={{ marginTop:8, color:"#334155", fontWeight:600 }}>No NFL games found for this week.</div>
@@ -369,7 +390,7 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       )}
 
-      {!error && games.map((g)=>{
+      {!error && flatSorted.map((g)=>{
         const showLead = g.isLive || g.isFinal;
         const homeScore = typeof g.home.score === "number" ? g.home.score : null;
         const awayScore = typeof g.away.score === "number" ? g.away.score : null;
@@ -383,6 +404,7 @@ function ScoresPanel({ date, setDate, tz }) {
               <TeamRowWithScore team={g.away} role="away" leading={awayLeading} size={32} />
             </div>
 
+            {/* Desktop / tablet details (right column) */}
             <div className="details-pane" style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
               <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                 <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
@@ -396,6 +418,7 @@ function ScoresPanel({ date, setDate, tz }) {
               <div style={{ fontSize:"0.85em" }}><span className="label">Location:</span>{" "}{stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}</div>
             </div>
 
+            {/* Mobile-only compact details table (below teams) */}
             <div className="details-mobile" style={{ padding:"0 12px 12px 12px" }}>
               <table className="mobile-table" style={{ width:"100%", borderCollapse:"collapse", fontSize:14 }}>
                 <tbody>
@@ -427,6 +450,7 @@ function ScoresPanel({ date, setDate, tz }) {
     </div>
   );
 }
+
 /* ---- Local Standings Aggregation ---- */
 const DIVISIONS = {
   "AFC East": ["BUF","MIA","NE","NYJ"],
