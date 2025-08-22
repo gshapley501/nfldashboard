@@ -392,7 +392,7 @@ function ScoresPanel({ date, setDate, tz }) {
             </div>
 
             {/* Mobile-only compact details table (below teams) */}
-            <div className="details-mobile" style={{ display:"none", padding:"0 12px 12px 12px" }}>
+            <div className="details-mobile" style={{ padding:"0 12px 12px 12px" }}>
               <table className="mobile-table" style={{ width:"100%", borderCollapse:"collapse", fontSize:14 }}>
                 <tbody>
                   <tr>
@@ -633,14 +633,14 @@ export default function App(){
       .label{font-size:12px;color:#64748b}
       table { font-family: var(--font-stack); }
 
-      /* New responsive layout for game cards */
+      /* Responsive layout */
       .gamecard { grid-template-columns: 1fr 300px; }
       .details-mobile { display: none; }
 
       @media (max-width: 640px) {
         .gamecard { grid-template-columns: 1fr; }
         .details-pane { display: none !important; }
-        .details-mobile { display: block; }
+        .details-mobile { display: block !important; }
         .teams-pane { padding-bottom: 0 !important; }
         .mobile-table tr + tr td, .mobile-table tr + tr th { border-top: 1px solid #e2e8f0; }
       }
