@@ -311,7 +311,7 @@ function ScoresPanel({ date, setDate, tz }) {
   // PHASED LOAD: show selected day first (fast), then hydrate the rest in background
   async function fetchDay(d, { background=false } = {}){
     const urls = scoreboardUrlsForDate(d);
-    // IMPORTANT FIX: background fetches use their own controller (not the shared one)
+    // IMPORTANT: background fetches get their own controller to avoid accidental aborts on mobile
     const controller = background ? new AbortController() : (abortRef.current || new AbortController());
     if (!background) abortRef.current = controller;
     const data = await fetchFirstOk(urls, { signal: controller.signal });
