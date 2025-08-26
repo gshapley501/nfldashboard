@@ -15,10 +15,10 @@ function _ttlForEspnUrl(espnUrl){
         const today = new Date();
         const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const diff = Math.floor((day - start)/86400000);
-        if (diff < -1) return 86400; // 1 day
-        if (diff === -1) return 300; // 5 min
-        if (diff === 0) return 30;   // 30s
-        return 1800;                 // 30 min future
+        if (diff < -1) return 86400; // 1 day (past)
+        if (diff === -1) return 300; // 5 min (yesterday)
+        if (diff === 0) return 30;   // 30s   (todayP
+        return 60;                  // 60s future
       }
       return 600;
     }
@@ -280,7 +280,6 @@ function ScoresPanel({ date, setDate, tz }) {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
   const abortRef = useRef(null);
-
   const weekStart = useMemo(() => startOfWeekISO(date, 4), [date]); // Thursday (NFL week)
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
 
