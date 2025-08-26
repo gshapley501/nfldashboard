@@ -1,4 +1,5 @@
 //update mobile view
+//remove "week of"
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
@@ -337,7 +338,7 @@ function ScoresPanel({ date, setDate, tz }) {
       <div className="controls" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>setDate(addDays(weekStart,-7))}>← Prev Week</button>
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
-          <span style={{fontWeight:600}}>Week of {weekLabel}</span>
+          <span style={{fontWeight:600}}>{weekLabel}</span>
           <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
             <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
           </select>
