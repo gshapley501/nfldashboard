@@ -281,7 +281,7 @@ function ScoresPanel({ date, setDate, tz }) {
   const [filter, setFilter] = useState("all");
   const abortRef = useRef(null);
 
-  const weekStart = useMemo(() => startOfWeekISO(date, 0), [date]); // Sunday
+  const weekStart = useMemo(() => startOfWeekISO(date, 4), [date]); // Thursday (NFL week)
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
 
   useEffect(() => {
