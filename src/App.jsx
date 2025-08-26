@@ -1,6 +1,47 @@
+//update mobile view
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** Endpoint helpers (proxied) */
+// Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
+function _ttlForEspnUrl(espnUrl){
+  try{
+    const u = new URL(espnUrl);
+    if(u.pathname.includes('/scoreboard')){
+      const d = u.searchParams.get('dates');
+      if(d && /^\d{8}$/.test(d)){
+        const Y=+d.slice(0,4), M=+d.slice(4,6)-1, D=+d.slice(6,8);
+        const day = new Date(Date.UTC(Y,M,D));
+        const today = new Date();
+        const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const diff = Math.floor((day - start)/86400000);
+        if (diff < -1) return 86400; // 1 day (past)
+        if (diff === -1) return 300; // 5 min (yesterday)
+        if (diff === 0) return 30;   // 30s   (todayP
+        return 60;                  // 60s future
+      }
+      return 600;
+    }
+  }catch{}
+  return 60;
+}
+function proxify(u){
+  if(typeof u !== 'string') return u;
+  if(u.startsWith('/espn/')){
+    const tail = u.replace(/^\/espn/, '');
+    const espn = 'https://site.api.espn.com' + tail;
+    const h = _ttlForEspnUrl(espn);
+    return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
+  }
+  if(u.startsWith('/espn-site/')){
+    const tail = u.replace(/^\/espn-site/, '');
+    const espn = 'https://site.api.espn.com' + tail;
+    const h = _ttlForEspnUrl(espn);
+    return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
+  }
+  return u;
+}
+
 const scoreboardUrlsForDate = (iso) => {
   const d = yyyymmdd(iso);
   const q = `dates=${d}&region=us&lang=en`;
@@ -8,6 +49,18 @@ const scoreboardUrlsForDate = (iso) => {
     `/espn/apis/site/v2/sports/football/nfl/scoreboard?${q}`,
     `/espn/apis/v2/sports/football/nfl/scoreboard?${q}`,
     `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q}`,
+  ];
+};
+const scoreboardUrlsForWeek = (season, week) => {
+  const q1 = `seasontype=2&week=${week}&region=us&lang=en`;
+  const q2 = `season=${season}&seasontype=2&week=${week}&region=us&lang=en`;
+  return [
+    `/espn/apis/site/v2/sports/football/nfl/scoreboard?${q2}`,
+    `/espn/apis/site/v2/sports/football/nfl/scoreboard?${q1}`,
+    `/espn/apis/v2/sports/football/nfl/scoreboard?${q2}`,
+    `/espn/apis/v2/sports/football/nfl/scoreboard?${q1}`,
+    `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q2}`,
+    `/espn-site/apis/site/v2/sports/football/nfl/scoreboard?${q1}`,
   ];
 };
 
@@ -35,6 +88,7 @@ function Pill({ children, tone = "default" }) {
   const t = tones[tone] || tones.default;
   return <span style={{display:"inline-flex",alignItems:"center",gap:6,padding:"2px 8px",borderRadius:999,border:`1px solid ${t.bd}`,background:t.bg,color:t.fg,fontSize:12}}>{children}</span>;
 }
+function RoleTag({ role }) { return <span style={{fontSize:12}}>{role==="home"?"🏠 HOME":"🚌 AWAY"}</span>; }
 
 /** Fallback logo helper (ESPN CDN pattern) */
 function fallbackLogoForAbbr(abbr){ return abbr ? `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png` : null; }
@@ -53,7 +107,7 @@ const STADIUM_URLS = {
   BAL:"https://www.baltimoreravens.com/stadium/",
   BUF:"https://www.buffalobills.com/stadium/",
   CAR:"https://www.panthers.com/stadium/",
-  CHI:"https://soldierfield.net/",
+  CHI:"https://soldierfield.com/",
   CIN:"https://www.bengals.com/stadium/",
   CLE:"https://www.clevelandbrowns.com/stadium/",
   DAL:"https://attstadium.com/",
@@ -70,7 +124,7 @@ const STADIUM_URLS = {
   MIA:"https://hardrockstadium.com/",
   MIN:"https://www.usbankstadium.com/",
   NE:"https://www.gillettestadium.com/",
-  NO:"https://www.caesars-superdome.com/",
+  NO:"https://www.caesarssuperdome.com/",
   NYG:"https://www.metlifestadium.com/",
   NYJ:"https://www.metlifestadium.com/",
   PHI:"https://www.lincolnfinancialfield.com/",
@@ -116,37 +170,39 @@ function StatusPill({ game }) {
 }
 
 /* Fetch helper (robust, proper AbortError) */
-async function fetchFirstOk(urls, init, opts = {}) {
+async function fetchFirstOk(urls, init){
   let lastStatus = 0, lastText = "";
-  for (const u of urls) {
-    try {
-      const r = await fetch(u, init);
-      if (r.ok) return await r.json();
-      lastStatus = r.status;
-      try { lastText = await r.text(); } catch { lastText = ""; }
-      if (!opts.silent) console.warn("[NFL] attempt failed", u, r.status);
-    } catch (e) {
-      if (e && e.name === "AbortError") throw e; // propagate aborts
-      lastStatus = 0; lastText = String(e || "");
-      if (!opts.silent) console.warn("[NFL] attempt threw", u, e);
-    }
+  const local = new AbortController();
+  if (init && init.signal) {
+    if (init.signal.aborted) local.abort();
+    else init.signal.addEventListener("abort", ()=> local.abort(), { once: true });
   }
-  throw new Error(`Request failed (last status ${lastStatus}): ${lastText.slice(0,160)}`);
+  return await new Promise((resolve, reject)=>{
+    let pending = urls.length;
+    if (pending === 0) return reject(new Error("No URLs provided"));
+    const done = (err, data) => {
+      if (err) reject(err); else resolve(data);
+      try{ local.abort(); }catch{}
+    };
+    for (const u of urls) {
+      fetch(proxify(u), { ...init, signal: local.signal }).then(async (r)=>{
+        if (r.ok) {
+          try { const json = await r.json(); done(null, json); } catch (e) { done(e); }
+        } else {
+          lastStatus = r.status;
+          try { lastText = await r.text(); } catch {}
+          console.warn("[NFL] attempt failed", u, r.status);
+          if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
+        }
+      }).catch((e)=>{
+        if (e && e.name === "AbortError") return;
+        lastStatus = 0; lastText = String(e||"");
+        console.warn("[NFL] attempt threw", u, e);
+        if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
+      });
+    }
+  });
 }
-
-/* Simple cache helpers (localStorage) */
-const cacheGet = (key) => {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (data && typeof data === "object") return data;
-    return null;
-  } catch { return null; }
-};
-const cacheSet = (key, value) => {
-  try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-};
 
 /* ESPN event -> simplified (with logo fallback & official team links) */
 function simplifyEspnEvent(ev) {
@@ -168,7 +224,7 @@ function simplifyEspnEvent(ev) {
       name: t.displayName || t.name || TEAM_FULL[abbr] || abbr,
       abbr,
       logo: logoHref,
-      page: TEAM_URLS[abbr] || undefined, // official site
+      page: TEAM_URLS[abbr] || undefined,
       score: c.score != null ? Number(c.score) : null,
       record: record.summary || "",
       winner: c.winner === true
@@ -221,12 +277,8 @@ function ScoresPanel({ date, setDate, tz }) {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("all");
   const abortRef = useRef(null);
-
-  const weekStart = useMemo(() => startOfWeekISO(date, 0), [date]); // Sunday
+  const weekStart = useMemo(() => startOfWeekISO(date, 4), [date]); // Thursday (NFL week)
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
-
-  // DEV: allow error test via ?dev=1
-  const dev = typeof window !== "undefined" && window.location && window.location.search.includes("dev=1");
 
   useEffect(() => {
     function onKey(e){ if(e.key==="ArrowLeft") setDate((d)=>addDays(d,-7)); if(e.key==="ArrowRight") setDate((d)=>addDays(d,7)); }
@@ -239,57 +291,22 @@ function ScoresPanel({ date, setDate, tz }) {
     return { ...prev, [day]: merged };
   }
 
-  async function fetchScoresWeek(days, { background=false, simulateError=false } = {}){
+  async function fetchScoresWeek(days, { background=false } = {}){
     if (abortRef.current) abortRef.current.abort();
-    const controller = (typeof AbortController !== "undefined") ? new AbortController() : { signal: undefined, abort(){/*no-op*/} };
-    abortRef.current = controller;
+    const controller = new AbortController(); abortRef.current = controller;
     if (!background){ setLoading(true); setError(""); } else setRefreshing(true);
-
     try {
-      // First, try cached results per day to paint immediately
-      const cachedResults = [];
-      for (const d of days) {
-        const ck = `scores:${d}`;
-        const cached = cacheGet(ck);
-        if (cached && Array.isArray(cached.games)) {
-          cachedResults.push({ day: d, games: cached.games });
-        }
-      }
-      if (cachedResults.length) {
-        setGamesByDate((prev)=>{
-          let next = background ? { ...prev } : {};
-          for (const {day, games} of cachedResults) next = mergeDay(next, day, games);
-          return next;
-        });
-      }
-
-      if (simulateError) throw new Error("Simulated error for testing");
-
       const results = await Promise.all(days.map(async (d)=>{
         const urls = scoreboardUrlsForDate(d);
         const data = await fetchFirstOk(urls, { signal: controller.signal });
-        const events = Array.isArray(data?.events) ? data.events : [];
-        // Deduplicate by id (safety)
-        const unique = Array.from(new Map(events.map((e)=>[e.id, e])).values());
-        const games = unique.map((ev)=>simplifyEspnEvent(ev));
-        // Cache
-        cacheSet(`scores:${d}`, { games, ts: Date.now(), v: 1 });
+        const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
         return { day:d, games };
       }));
-
       setGamesByDate((prev)=>{
         let next = background ? { ...prev } : {};
         for (const {day, games} of results) next = mergeDay(next, day, games);
         return next;
       });
-
-      // Prefetch next week in background
-      if (!background) {
-        const nextWeekStart = addDays(weekStart, 7);
-        const nextDays = range7(nextWeekStart);
-        // Fire and forget; ignore errors
-        fetchScoresWeek(nextDays, { background:true }).catch(()=>{});
-      }
     } catch(e){
       if(e.name!=="AbortError" && !background) setError(e.message || "Failed to load scores");
     } finally { if(!background) setLoading(false); setRefreshing(false); }
@@ -321,35 +338,20 @@ function ScoresPanel({ date, setDate, tz }) {
         <button className="btn" onClick={()=>setDate(addDays(weekStart,-7))}>← Prev Week</button>
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
           <span style={{fontWeight:600}}>Week of {weekLabel}</span>
-          <select className="input" aria-label="Filter games" value={filter} onChange={(e)=>setFilter(e.target.value)}>
+          <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
             <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
           </select>
           <div style={{fontSize:12,color:"#64748b"}}>Times: {tz}</div>
-          {refreshing && <span className="pill pill-mini" role="status" aria-live="polite">Updating…</span>}
+          {refreshing && <span className="pill pill-mini">Updating…</span>}
         </div>
         <div className="row" style={{display:"flex",gap:8,alignItems:"center"}}>
           <button className="btn" onClick={()=>setDate(fmtDate(new Date()))}>This Week</button>
           <button className="btn" onClick={()=>setDate(addDays(weekStart,7))}>Next Week →</button>
-          {dev && <button className="btn btn-ghost" onClick={()=>fetchScoresWeek(weekDays, { simulateError:true })} title="Simulate error">Simulate Error</button>}
         </div>
       </div>
 
-      {loading && (
-        <div className="skeleton-list">
-          {[...Array(4)].map((_,i)=>(
-            <div key={i} className="card skeleton" aria-hidden="true">
-              <div className="skeleton-bar" />
-              <div className="skeleton-bar" />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {error && (
-        <div role="alert" style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>
-          {error}
-        </div>
-      )}
+      {loading && <div style={{ color:"#475569" }}>Loading scores…</div>}
+      {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
       {!loading && !error && flatSorted.length === 0 && (
         <div className="card" style={{ padding:24, textAlign:"center" }}>
@@ -366,24 +368,32 @@ function ScoresPanel({ date, setDate, tz }) {
         const homeLeading = showLead && homeScore != null && awayScore != null && homeScore > awayScore;
         const awayLeading = showLead && homeScore != null && awayScore != null && awayScore > homeScore;
         const stadiumUrl = getStadiumUrlForTeam(g.home.abbr);
-        const liveClass = g.isLive ? " livecard" : "";
         return (
-          <div key={g.id} className={"card gamecard"+liveClass}>
+          <div key={g.id} className="card gamegrid">
             <div style={{ padding:12, display:"grid", gap:10 }}>
               <TeamRowWithScore team={g.home} role="home" leading={homeLeading} size={32} />
               <TeamRowWithScore team={g.away} role="away" leading={awayLeading} size={32} />
             </div>
-            <div className="rightcol" style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-                <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
-                <StatusPill game={g} />{g.isPreseason && <Pill>Preseason</Pill>}
+            <div className="game-meta" style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
+              <div className="game-meta-box" style={{ display:"grid", gap:8 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
+                  <StatusPill game={g} />{g.isPreseason && <Pill>Preseason</Pill>}
+                </div>
+                <div style={{ fontSize:"0.85em" }}>
+                  <span className="label">Kickoff:</span>{" "}
+                  {new Date(g.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}{" "}
+                  {prettyTime(g.date, tz)}
+                </div>
+                <div style={{ fontSize:"0.85em" }}>
+                  <span className="label">Location:</span>{" "}
+                  {stadiumUrl ? (
+                    <a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>
+                      {g.venue || "—"}
+                    </a>
+                  ) : (g.venue || "—")}
+                </div>
               </div>
-              <div style={{ fontSize:"0.85em" }}>
-                <span className="label">Kickoff:</span>{" "}
-                {new Date(g.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}{" "}
-                {prettyTime(g.date, tz)}
-              </div>
-              <div style={{ fontSize:"0.85em" }}><span className="label">Location:</span> {stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}</div>
             </div>
           </div>
         );
@@ -392,7 +402,7 @@ function ScoresPanel({ date, setDate, tz }) {
   );
 }
 
-/* ---- Local Standings Aggregation (DATE-BASED ONLY; no week endpoints) ---- */
+/* ---- Local Standings Aggregation ---- */
 const DIVISIONS = {
   "AFC East": ["BUF","MIA","NE","NYJ"],
   "AFC North": ["BAL","CIN","CLE","PIT"],
@@ -405,9 +415,9 @@ const DIVISIONS = {
 };
 function pct(w,l,t=0){ const g=w+l+t; return g? (w + 0.5*t)/g : 0; }
 
-async function fetchDateScoreboard(iso, signal, { silent = false } = {}) {
-  const urls = scoreboardUrlsForDate(iso);
-  return await fetchFirstOk(urls, { signal }, { silent });
+async function fetchWeekScoreboard(season, week, signal){
+  const urls = scoreboardUrlsForWeek(season, week);
+  return await fetchFirstOk(urls, { signal });
 }
 function tallyFromEvents(events, table){
   for(const ev of events){
@@ -425,30 +435,44 @@ function tallyFromEvents(events, table){
   }
 }
 
-function seasonalDateRange(season){
-  // Use August 1 of season year to January 31 of next year (covers preseason to playoffs)
-  const start = new Date(season, 7, 1); // August = 7
-  const end = new Date(season + 1, 0, 31);
-  const today = new Date();
-  const last = today < end ? today : end;
-  const out = [];
-  let cur = fmtDate(start);
-  const lastIso = fmtDate(last);
-  let safety = 220;
-  while (cur <= lastIso && safety-- > 0){
-    out.push(cur);
-    cur = addDays(cur, 1);
-  }
-  return out;
+async function hasFinalsForWeek(season, week, signal){
+  try{
+    const data = await fetchWeekScoreboard(season, week, signal);
+    const evs = (data && data.events) || [];
+    for (const ev of evs){
+      const s = simplifyEspnEvent(ev);
+      if (s.isFinal && !s.isPreseason) return true;
+    }
+    return false;
+  }catch{ return false; }
 }
-
+async function discoverMaxCompletedWeek(season, signal){
+  let lo=1, hi=18, ans=0;
+  while(lo<=hi){
+    const mid = Math.floor((lo+hi)/2);
+    const ok = await hasFinalsForWeek(season, mid, signal);
+    if(ok){ ans=mid; lo=mid+1; } else { hi=mid-1; }
+  }
+  return ans;
+}
+function limitConcurrency(tasks, n){
+  let i=0, active=0; const out=new Array(tasks.length);
+  return new Promise((resolve)=>{
+    const next=()=>{
+      if(i===tasks.length && active===0) return resolve(Promise.all(out));
+      while(active<n && i<tasks.length){
+        const idx=i++; active++;
+        out[idx]=tasks[idx]().finally(()=>{ active--; next(); });
+      }
+    };
+    next();
+  });
+}
 function StandingsPanel({ season }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [divisions, setDivisions] = useState([]);
-  const [sortKey, setSortKey] = useState("pct");
-  const [sortDir, setSortDir] = useState("desc");
 
   const numCell = {
     padding: 8,
@@ -458,62 +482,23 @@ function StandingsPanel({ season }) {
     whiteSpace: "nowrap",
   };
 
-  // DEV: allow error test via ?dev=1
-  const dev = typeof window !== "undefined" && window.location && window.location.search.includes("dev=1");
-
-  const sortTeams = (teams) => {
-    const dir = sortDir === "asc" ? 1 : -1;
-    const key = sortKey;
-    const val = (t) => (key === "pct" ? t.pct : key === "w" ? t.w : key === "l" ? t.l : key === "t" ? t.t : t.pct);
-    return teams.slice().sort((a,b)=> {
-      const d = (val(a) - val(b)) * dir;
-      if (d !== 0) return d;
-      // tie-breakers
-      return (b.w - a.w) || (a.l - b.l) || a.name.localeCompare(b.name);
-    });
-  };
-
   useEffect(()=>{
     let live = true;
     async function load({ background=false } = {}){
       if(!background){ setLoading(true); setError(""); } else setRefreshing(true);
       try {
-        const controller = (typeof AbortController !== "undefined") ? new AbortController() : { signal: undefined, abort(){/*no-op*/} };
-        const days = seasonalDateRange(season);
-        const table = {};
-        // First fill from cache to paint something
-        for (const d of days){
-          const cached = cacheGet(`scores:${d}`);
-          if (cached && Array.isArray(cached.games)) {
-            tallyFromEvents(cached.games.map(g => ({
-              // fabricate minimal ESPN-like event to reuse simplify path
-              competitions:[{ competitors:[
-                { homeAway:"away", team:{ abbreviation:g.away.abbr, logos:[{href:g.away.logo}] }, score:String(g.away.score), winner:g.away.winner, records:[{type:"total",summary:g.away.record}] },
-                { homeAway:"home", team:{ abbreviation:g.home.abbr, logos:[{href:g.home.logo}] }, score:String(g.home.score), winner:g.home.winner, records:[{type:"total",summary:g.home.record}] },
-              ], status:g.status, venue:{ fullName:g.venue }, season:{ type: g.isPreseason ? 1 : 2 }}],
-              status:g.status, date:g.date, id:g.id
-            })), table);
-          }
+        const controller = new AbortController();
+        const upto = await discoverMaxCompletedWeek(season, controller.signal);
+        const tasks = [];
+        for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
+          tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
         }
-        // Then fetch fresh in small batches to avoid hammering
-        for (let i=0;i<days.length;i+=3){
-          const slice = days.slice(i,i+3);
-          const results = await Promise.all(slice.map(async (iso)=>{
-            try {
-              const data = await fetchDateScoreboard(iso, controller.signal, { silent: true });
-              const events = Array.isArray(data?.events) ? data.events : [];
-              // Cache simplified for reuse by ScoresPanel format
-              const games = events.map(simplifyEspnEvent);
-              cacheSet(`scores:${iso}`, { games, ts: Date.now(), v: 1 });
-              tallyFromEvents(events, table);
-              return true;
-            } catch { return false; }
-          }));
-          if (!live) break;
-          // yield to main thread a bit
-          await new Promise(r=>setTimeout(r, 0));
+        const weeks = await limitConcurrency(tasks, 6);
+        const table = {}; // abbr -> {team, w,l,t}
+        for(const wk of weeks){
+          if(!wk) continue;
+          tallyFromEvents((wk && wk.events) || [], table);
         }
-
         const groups = Object.entries(DIVISIONS).map(([name, abbrs])=>{
           const teams = abbrs.map((abbr)=>{
             const row = table[abbr] || { team: { abbr, name: TEAM_FULL[abbr], logo: fallbackLogoForAbbr(abbr) }, w:0,l:0,t:0 };
@@ -527,7 +512,7 @@ function StandingsPanel({ season }) {
               w: row.w, l: row.l, t: row.t,
               pct: pct(row.w,row.l,row.t),
             };
-          });
+          }).sort((a,b)=> b.pct - a.pct || b.w - a.w || a.l - b.l || a.name.localeCompare(b.name));
           return { name, teams };
         });
         if(live) setDivisions(groups);
@@ -542,65 +527,41 @@ function StandingsPanel({ season }) {
     const id = setInterval(()=>{ if(document.visibilityState==="visible") load({ background:true }); }, 5*60*1000);
     const onVis = () => { if(document.visibilityState==="visible") load({ background:true }); };
     document.addEventListener("visibilitychange", onVis);
-    return ()=>{ live = false; clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [season]);
-
-  const headerBtn = (key, label) => {
-    const active = sortKey === key;
-    const dirArrow = active ? (sortDir === "asc" ? "↑" : "↓") : "";
-    return (
-      <button
-        className="tablehdr"
-        onClick={()=>{
-          if (sortKey === key) setSortDir(d=> d==="asc" ? "desc" : "asc");
-          else { setSortKey(key); setSortDir("desc"); }
-        }}
-        aria-pressed={active}
-        title={`Sort by ${label}`}
-      >
-        {label} {dirArrow}
-      </button>
-    );
-  };
-
-  const safeDivisions = Array.isArray(divisions) ? divisions : [];
 
   return (
     <div style={{ display:"grid", gap:12 }}>
       <h2 style={{ margin: 0 }}>Standings · {season}</h2>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-        {refreshing && <span className="pill pill-mini" role="status" aria-live="polite">Updating…</span>}
-        {dev && <button className="btn btn-ghost" onClick={()=>{ setError("Simulated error for testing"); }} title="Simulate error">Simulate Error</button>}
+        <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
+        {refreshing && <span className="pill pill-mini">Updating…</span>}
       </div>
+      {loading && <div style={{ color:"#475569" }}>Loading standings…</div>}
+      {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
-      {loading && (
-        <div className="skeleton card" aria-hidden="true">
-          <div className="skeleton-bar"/>
-          <div className="skeleton-bar"/>
-        </div>
-      )}
-
-      {error && (
-        <div role="alert" style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>
-          {error}
-        </div>
-      )}
-
-      {!loading && !error && safeDivisions.map((d, i) => (
+      {!loading && !error && divisions.map((d, i) => (
         <div key={i} className="card" style={{ border:"1px solid #e2e8f0", borderRadius:16, overflow:"hidden", background:"#fff" }}>
           <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}>
-                <th style={{padding:8}}>Team</th>
-                <th style={numCell}>{headerBtn("w","W")}</th>
-                <th style={numCell}>{headerBtn("l","L")}</th>
-                <th style={numCell}>{headerBtn("t","T")}</th>
-                <th style={numCell}>{headerBtn("pct","Pct")}</th>
-              </tr></thead>
+              {/* Team | W | L | T (Pct removed) */}
+              <colgroup>
+                <col/>
+                <col style={{width:64}}/>
+                <col style={{width:64}}/>
+                <col style={{width:64}}/>
+              </colgroup>
+              <thead>
+                <tr style={{ color:"#64748b", textAlign:"left" }}>
+                  <th style={{padding:8}}>Team</th>
+                  <th style={numCell}>W</th>
+                  <th style={numCell}>L</th>
+                  <th style={numCell}>T</th>
+                </tr>
+              </thead>
               <tbody>
-                {sortTeams(d.teams).map((t)=>(
+                {d.teams.map((t)=>(
                   <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
                     <td style={{ padding:8 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0 }}>
@@ -611,7 +572,6 @@ function StandingsPanel({ season }) {
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
-                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -627,10 +587,9 @@ function StandingsPanel({ season }) {
 function Tabs({ value, onChange }) {
   const items = [{ id: "scores", label: "Scores" }, { id: "standings", label: "Standings" }];
   return (
-    <div style={{ border:"1px solid #e2e8f0", background:"#fff", padding:4, borderRadius:12, display:"inline-flex", gap:4 }} role="tablist" aria-label="Dashboard sections">
+    <div style={{ border:"1px solid #e2e8f0", background:"#fff", padding:4, borderRadius:12, display:"inline-flex", gap:4 }}>
       {items.map((it)=>(
         <button key={it.id} onClick={()=>onChange(it.id)} className="btn"
-          role="tab" aria-selected={value===it.id}
           style={{ background:value===it.id?"#0f172a":"#fff", color:value===it.id?"#fff":"#0f172a", borderColor:"#e2e8f0" }}>{it.label}</button>
       ))}
     </div>
@@ -654,8 +613,6 @@ export default function App(){
       .container{max-width:1024px;margin:0 auto;padding:16px}
       .btn{border:1px solid #e2e8f0;background:#fff;border-radius:12px;padding:8px 12px;cursor:pointer}
       .btn:hover{background:#f8fafc}
-      .btn:focus-visible{outline:3px solid #94a3b8; outline-offset:2px}
-      .btn-ghost{background:transparent}
       .input{border:1px solid #e2e8f0;border-radius:12px;padding:8px;font-family:var(--font-stack)}
       .row{display:flex;gap:8px;align-items:center}
       .card{border:1px solid #e2e8f0;border-radius:16px;overflow:hidden;background:#fff;margin-bottom:12px}
@@ -663,25 +620,22 @@ export default function App(){
       .scorepill-leading{background:#0f172a;color:#fff}
       .label{font-size:12px;color:#64748b}
       table { font-family: var(--font-stack); }
-      .gamecard{ display:grid; grid-template-columns:1fr 300px; gap:12px }
-      .gamecard.livecard { animation: glow 1.6s ease-in-out infinite alternate; }
-      .rightcol{ border-left:1px solid #e2e8f0 }
-      @media (max-width: 640px){
-        .gamecard{ grid-template-columns: 1fr; }
-        .rightcol{ border-left:none; border-top:1px solid #e2e8f0 }
+
+      /* NEW: responsive grid for game cards */
+      .gamegrid { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
+      .game-meta { border-left: 1px solid #e2e8f0; }
+      .game-meta-box { /* styled only on mobile via media query */ }
+
+      @media (max-width: 640px) {
+        .gamegrid { grid-template-columns: 1fr; }
+        .game-meta { border-left: none !important; border-top: 1px solid #e2e8f0; }
+        .game-meta-box {
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          padding: 10px;
+          background: #f8fafc;
+        }
       }
-      @media (prefers-reduced-motion: reduce){
-        .gamecard.livecard { animation: none; }
-      }
-      @keyframes glow {
-        from { box-shadow: 0 0 0 rgba(16,24,39,0.0); }
-        to   { box-shadow: 0 0 18px rgba(16,24,39,0.08); }
-      }
-      .skeleton{ position:relative; padding:16px; }
-      .skeleton-bar{ height:14px; margin:10px 0; background:linear-gradient(90deg,#f1f5f9, #e2e8f0, #f1f5f9); background-size:200% 100%; animation: shimmer 1.2s linear infinite; border-radius:8px }
-      @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
-      .tablehdr{ background:none; border:none; cursor:pointer; font: inherit; color: inherit; }
-      .tablehdr:focus-visible{ outline:2px solid #94a3b8; outline-offset:2px; border-radius:6px }
     `;
     document.head.appendChild(base);
     return ()=>{ try{ document.head.removeChild(base);}catch{} };
@@ -702,7 +656,7 @@ export default function App(){
           {tab==="standings" && <StandingsPanel season={season} />}
         </main>
         <footer style={{ marginTop:16, fontSize:12, color:"#64748b" }}>
-          Data via ESPN date scoreboards; preseason games are marked and excluded from standings.
+          Data via ESPN weekly scoreboards; preseason games are marked and excluded from standings.
         </footer>
       </div>
     </div>
