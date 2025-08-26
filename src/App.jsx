@@ -1,3 +1,5 @@
+//update mobile view
+
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** Endpoint helpers (proxied) */
@@ -168,9 +170,7 @@ function StatusPill({ game }) {
 }
 
 /* Fetch helper (robust, proper AbortError) */
-
 async function fetchFirstOk(urls, init){
-  // concurrent 'first 200 wins' with loser aborts
   let lastStatus = 0, lastText = "";
   const local = new AbortController();
   if (init && init.signal) {
@@ -204,7 +204,6 @@ async function fetchFirstOk(urls, init){
   });
 }
 
-
 /* ESPN event -> simplified (with logo fallback & official team links) */
 function simplifyEspnEvent(ev) {
   const comp = ev?.competitions?.[0] || {};
@@ -225,7 +224,7 @@ function simplifyEspnEvent(ev) {
       name: t.displayName || t.name || TEAM_FULL[abbr] || abbr,
       abbr,
       logo: logoHref,
-      page: TEAM_URLS[abbr] || undefined, // official site
+      page: TEAM_URLS[abbr] || undefined,
       score: c.score != null ? Number(c.score) : null,
       record: record.summary || "",
       winner: c.winner === true
@@ -370,22 +369,31 @@ function ScoresPanel({ date, setDate, tz }) {
         const awayLeading = showLead && homeScore != null && awayScore != null && awayScore > homeScore;
         const stadiumUrl = getStadiumUrlForTeam(g.home.abbr);
         return (
-          <div key={g.id} className="card" style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:12 }}>
+          <div key={g.id} className="card gamegrid">
             <div style={{ padding:12, display:"grid", gap:10 }}>
               <TeamRowWithScore team={g.home} role="home" leading={homeLeading} size={32} />
               <TeamRowWithScore team={g.away} role="away" leading={awayLeading} size={32} />
             </div>
-            <div style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
-                <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
-                <StatusPill game={g} />{g.isPreseason && <Pill>Preseason</Pill>}
+            <div className="game-meta" style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
+              <div className="game-meta-box" style={{ display:"grid", gap:8 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                  <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
+                  <StatusPill game={g} />{g.isPreseason && <Pill>Preseason</Pill>}
+                </div>
+                <div style={{ fontSize:"0.85em" }}>
+                  <span className="label">Kickoff:</span>{" "}
+                  {new Date(g.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}{" "}
+                  {prettyTime(g.date, tz)}
+                </div>
+                <div style={{ fontSize:"0.85em" }}>
+                  <span className="label">Location:</span>{" "}
+                  {stadiumUrl ? (
+                    <a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>
+                      {g.venue || "—"}
+                    </a>
+                  ) : (g.venue || "—")}
+                </div>
               </div>
-              <div style={{ fontSize:"0.85em" }}>
-                <span className="label">Kickoff:</span>{" "}
-                {new Date(g.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}{" "}
-                {prettyTime(g.date, tz)}
-              </div>
-              <div style={{ fontSize:"0.85em" }}><span className="label">Location:</span> {stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}</div>
             </div>
           </div>
         );
@@ -426,7 +434,6 @@ function tallyFromEvents(events, table){
     else { table[home].w++; table[away].l++; }
   }
 }
-
 
 async function hasFinalsForWeek(season, week, signal){
   try{
@@ -477,18 +484,17 @@ function StandingsPanel({ season }) {
 
   useEffect(()=>{
     let live = true;
-    
-  async function load({ background=false } = {}){
-    if(!background){ setLoading(true); setError(""); } else setRefreshing(true);
-    try {
-      const controller = new AbortController();
-      const upto = await discoverMaxCompletedWeek(season, controller.signal);
-      const tasks = [];
-      for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
-        tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
-      }
-      const weeks = await limitConcurrency(tasks, 6);
-      const table = {}; // abbr -> {team, w,l,t}
+    async function load({ background=false } = {}){
+      if(!background){ setLoading(true); setError(""); } else setRefreshing(true);
+      try {
+        const controller = new AbortController();
+        const upto = await discoverMaxCompletedWeek(season, controller.signal);
+        const tasks = [];
+        for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
+          tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
+        }
+        const weeks = await limitConcurrency(tasks, 6);
+        const table = {}; // abbr -> {team, w,l,t}
         for(const wk of weeks){
           if(!wk) continue;
           tallyFromEvents((wk && wk.events) || [], table);
@@ -539,8 +545,21 @@ function StandingsPanel({ season }) {
           <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th><th style={numCell}>Pct</th></tr></thead>
+              {/* Team | W | L | T (Pct removed) */}
+              <colgroup>
+                <col/>
+                <col style={{width:64}}/>
+                <col style={{width:64}}/>
+                <col style={{width:64}}/>
+              </colgroup>
+              <thead>
+                <tr style={{ color:"#64748b", textAlign:"left" }}>
+                  <th style={{padding:8}}>Team</th>
+                  <th style={numCell}>W</th>
+                  <th style={numCell}>L</th>
+                  <th style={numCell}>T</th>
+                </tr>
+              </thead>
               <tbody>
                 {d.teams.map((t)=>(
                   <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
@@ -553,7 +572,6 @@ function StandingsPanel({ season }) {
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
-                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -602,6 +620,22 @@ export default function App(){
       .scorepill-leading{background:#0f172a;color:#fff}
       .label{font-size:12px;color:#64748b}
       table { font-family: var(--font-stack); }
+
+      /* NEW: responsive grid for game cards */
+      .gamegrid { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
+      .game-meta { border-left: 1px solid #e2e8f0; }
+      .game-meta-box { /* styled only on mobile via media query */ }
+
+      @media (max-width: 640px) {
+        .gamegrid { grid-template-columns: 1fr; }
+        .game-meta { border-left: none !important; border-top: 1px solid #e2e8f0; }
+        .game-meta-box {
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          padding: 10px;
+          background: #f8fafc;
+        }
+      }
     `;
     document.head.appendChild(base);
     return ()=>{ try{ document.head.removeChild(base);}catch{} };
