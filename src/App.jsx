@@ -1,5 +1,3 @@
-//fix this
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** Endpoint helpers (proxied) */
@@ -615,7 +613,7 @@ export default function App(){
         <header style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
             <h1 style={{ fontSize:28, margin:0 }}>NFL Daily Dashboard</h1>
-            <div style={{ color:"#64748b" }}>Scores & Standings (preseason labeled; excluded from standings)</div>
+            <div style={{ color:"#64748b" }}>Scores & Standings</div>
           </div>
           <Tabs value={tab} onChange={setTab} />
         </header>
