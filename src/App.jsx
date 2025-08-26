@@ -526,7 +526,7 @@ function StandingsPanel({ season }) {
 
   return (
     <div style={{ display:"grid", gap:12 }}>
-      <h2 style={{ margin: 0 }}>Standings · {season} (Regular Season, local aggregation)</h2>
+      <h2 style={{ margin: 0 }}>Standings · {season}</h2>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
         <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
         {refreshing && <span className="pill pill-mini">Updating…</span>}
