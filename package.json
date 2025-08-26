@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "prebuild": "npm audit fix --audit-level=moderate || true",
+    "prebuild": "npm audit fix --force || true",
     "build": "vite build",
     "preview": "vite preview"
   },
