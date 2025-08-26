@@ -1,7 +1,7 @@
-
-import React, { useEffect, useMemo, useRef, useState, memo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 /** Endpoint helpers (proxied) */
+// Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
 function _ttlForEspnUrl(espnUrl){
   try{
     const u = new URL(espnUrl);
@@ -71,34 +71,14 @@ const prettyTime = (isoString, tz = Intl.DateTimeFormat().resolvedOptions().time
   try { return new Intl.DateTimeFormat(undefined,{timeZone:tz,hour:"numeric",minute:"2-digit"}).format(new Date(isoString)); } catch { return ""; }
 };
 function startOfWeekISO(iso, weekStartsOn = 0) {
-  const d = parseDate(iso);
-  const day = d.getDay(); // 0=Sun..6=Sat
-  const offset = (day - weekStartsOn + 7) % 7;
-  d.setDate(d.getDate() - offset);
-  return fmtDate(d);
+  const d=parseDate(iso); const day=d.getDay();
+  const diff = day < weekStartsOn ? 7 - (weekStartsOn - day) : day - weekStartsOn;
+  d.setDate(d.getDate()-diff); return fmtDate(d);
 }
 function range7(isoStart){ const a=[]; for(let i=0;i<7;i++) a.push(addDays(isoStart,i)); return a; }
 
 /* Fonts */
 const FONT_STACK = `Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica Neue, Arial, Noto Sans, Apple Color Emoji, Segoe UI Emoji, Segoe UI Symbol`;
-
-/* Tiny cache (localStorage) */
-const lc = {
-  get(key){
-    try{
-      const raw = localStorage.getItem(key);
-      if(!raw) return null;
-      const { data, exp } = JSON.parse(raw);
-      if(exp && Date.now() > exp) return null;
-      return data;
-    }catch{ return null; }
-  },
-  set(key, data, ttlMs=5*60*1000){
-    try{
-      localStorage.setItem(key, JSON.stringify({ data, exp: Date.now() + ttlMs }));
-    }catch{}
-  }
-};
 
 /* UI bits */
 function Pill({ children, tone = "default" }) {
@@ -106,14 +86,17 @@ function Pill({ children, tone = "default" }) {
   const t = tones[tone] || tones.default;
   return <span style={{display:"inline-flex",alignItems:"center",gap:6,padding:"2px 8px",borderRadius:999,border:`1px solid ${t.bd}`,background:t.bg,color:t.fg,fontSize:12}}>{children}</span>;
 }
+function RoleTag({ role }) { return <span style={{fontSize:12}}>{role==="home"?"🏠 HOME":"🚌 AWAY"}</span>; }
 
-const TeamLogo = memo(function TeamLogo({ href, abbr, size = 28 }) {
+/** Fallback logo helper (ESPN CDN pattern) */
+function fallbackLogoForAbbr(abbr){ return abbr ? `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png` : null; }
+function TeamLogo({ href, abbr, size = 28 }) {
   const [bad, setBad] = useState(false);
-  const src = (!href || bad) ? (abbr ? `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png` : null) : href;
+  const src = (!href || bad) ? fallbackLogoForAbbr(abbr) : href;
   const box = { width:size, height:size, borderRadius:size/2, background:"#f1f5f9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700 };
   if(!src) return <div style={box}>{abbr?.slice(0,3)||""}</div>;
-  return <img loading="lazy" decoding="async" fetchpriority="low" src={src} alt="logo" style={{width:size,height:size,objectFit:"contain",display:"block"}} onError={()=>setBad(true)} />;
-});
+  return <img src={src} alt="logo" style={{width:size,height:size,objectFit:"contain",display:"block"}} onError={()=>setBad(true)} />;
+}
 
 /** Stadium links */
 const STADIUM_URLS = {
@@ -159,7 +142,7 @@ const TEAM_URLS = {
   DAL:"https://www.dallascowboys.com", DEN:"https://www.denverbroncos.com", DET:"https://www.detroitlions.com", GB:"https://www.packers.com",
   HOU:"https://www.houstontexans.com", IND:"https://www.colts.com", JAX:"https://www.jaguars.com", KC:"https://www.chiefs.com",
   LAC:"https://www.chargers.com", LAR:"https://www.therams.com", LV:"https://www.raiders.com", MIA:"https://www.miamidolphins.com",
-  MIN:"https://www.vikings.com", NE:"https://www.patriots.com", NO:"https://www.neworleansaints.com", NYG:"https://www.giants.com",
+  MIN:"https://www.vikings.com", NE:"https://www.patriots.com", NO:"https://www.neworleanssaints.com", NYG:"https://www.giants.com",
   NYJ:"https://www.newyorkjets.com", PHI:"https://www.philadelphiaeagles.com", PIT:"https://www.steelers.com", SEA:"https://www.seahawks.com",
   SF:"https://www.49ers.com", TB:"https://www.buccaneers.com", TEN:"https://www.tennesseetitans.com", WAS:"https://www.commanders.com"
 };
@@ -185,7 +168,9 @@ function StatusPill({ game }) {
 }
 
 /* Fetch helper (robust, proper AbortError) */
+
 async function fetchFirstOk(urls, init){
+  // concurrent 'first 200 wins' with loser aborts
   let lastStatus = 0, lastText = "";
   const local = new AbortController();
   if (init && init.signal) {
@@ -206,18 +191,21 @@ async function fetchFirstOk(urls, init){
         } else {
           lastStatus = r.status;
           try { lastText = await r.text(); } catch {}
+          console.warn("[NFL] attempt failed", u, r.status);
           if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
         }
       }).catch((e)=>{
         if (e && e.name === "AbortError") return;
         lastStatus = 0; lastText = String(e||"");
+        console.warn("[NFL] attempt threw", u, e);
         if (--pending === 0) done(new Error(`Request failed (last status ${lastStatus}): ${String(lastText).slice(0,160)}`));
       });
     }
   });
 }
 
-/* ESPN event -> simplified */
+
+/* ESPN event -> simplified (with logo fallback & official team links) */
 function simplifyEspnEvent(ev) {
   const comp = ev?.competitions?.[0] || {};
   const status = ev?.status || comp?.status || {};
@@ -229,7 +217,7 @@ function simplifyEspnEvent(ev) {
     const c = competitors.find((x) => x.homeAway === homeAway) || {};
     const t = c.team || {};
     const logos = t.logos || c.team?.logos || [];
-    const logoHref = logos[0]?.href || logos[0]?.url || (t.abbreviation ? `https://a.espncdn.com/i/teamlogos/nfl/500/${t.abbreviation.toLowerCase()}.png` : undefined);
+    const logoHref = logos[0]?.href || logos[0]?.url || fallbackLogoForAbbr(t.abbreviation);
     const record = (c.records || []).find((r) => r.type === "total") || {};
     const abbr = t.abbreviation;
     return {
@@ -237,7 +225,7 @@ function simplifyEspnEvent(ev) {
       name: t.displayName || t.name || TEAM_FULL[abbr] || abbr,
       abbr,
       logo: logoHref,
-      page: TEAM_URLS[abbr] || undefined,
+      page: TEAM_URLS[abbr] || undefined, // official site
       score: c.score != null ? Number(c.score) : null,
       record: record.summary || "",
       winner: c.winner === true
@@ -257,12 +245,11 @@ function simplifyEspnEvent(ev) {
     isFinal: sName === "status_final" || sName === "final",
     isLive: sName === "status_in_progress" || sName === "in",
     isPreseason: Number(seasonType) === 1,
-    isPostseason: Number(seasonType) === 3,
   };
 }
 
 /* SCORES */
-const TeamRowWithScore = memo(function TeamRowWithScore({ team, role, leading, size = 32 }) {
+function TeamRowWithScore({ team, role, leading, size = 32 }) {
   return (
     <div className="teamline" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -282,7 +269,7 @@ const TeamRowWithScore = memo(function TeamRowWithScore({ team, role, leading, s
       </div>
     </div>
   );
-});
+}
 
 function ScoresPanel({ date, setDate, tz }) {
   const [gamesByDate, setGamesByDate] = useState({});
@@ -295,74 +282,54 @@ function ScoresPanel({ date, setDate, tz }) {
   const weekStart = useMemo(() => startOfWeekISO(date, 0), [date]); // Sunday
   const weekDays = useMemo(() => range7(weekStart), [weekStart]);
 
-  async function fetchDay(d, { background=false } = {}){
-    const urls = scoreboardUrlsForDate(d);
-    try{
-      const data = await fetchFirstOk(urls, { signal: abortRef.current?.signal });
-      const gamesAll = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
-      // Include preseason, exclude postseason
-      const games = gamesAll.filter(g=>!g.isPostseason);
-      setGamesByDate((prev)=> ({ ...prev, [d]: games }));
-      if(!background){ lc.set(`nfl_scores_${d}_v1`, games, 5*60*1000); }
-    }catch(e){
-      setGamesByDate((prev)=> ({ ...prev, [d]: [] }));
-      if(!background){
-        setError(`Failed to load scores for ${d}: ${e?.message || e}`);
-      }
-    }
+  useEffect(() => {
+    function onKey(e){ if(e.key==="ArrowLeft") setDate((d)=>addDays(d,-7)); if(e.key==="ArrowRight") setDate((d)=>addDays(d,7)); }
+    window.addEventListener("keydown", onKey); return () => window.removeEventListener("keydown", onKey);
+  }, [setDate]);
+
+  function mergeDay(prev, day, nextGames){
+    const arr = prev[day] || []; const map = new Map(arr.map((g)=>[g.id,g]));
+    const merged = nextGames.map((n)=> map.has(n.id) ? { ...map.get(n.id), ...n } : n );
+    return { ...prev, [day]: merged };
   }
 
-  async function fetchScoresInitial(){
+  async function fetchScoresWeek(days, { background=false } = {}){
     if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-    setLoading(true); setError("");
-    try{
-      const days = weekDays;
-      // Preload any cached days immediately
-      for(const d of days){
-        const cached = lc.get(`nfl_scores_${d}_v1`);
-        if (cached) setGamesByDate((prev)=> ({ ...prev, [d]: cached }));
-      }
-      await Promise.allSettled(days.map((d)=>fetchDay(d)));
-    }catch(e){
-      if(e.name!=="AbortError") setError(e.message || "Failed to load scores");
-    }finally{
-      setLoading(false);
-    }
+    const controller = new AbortController(); abortRef.current = controller;
+    if (!background){ setLoading(true); setError(""); } else setRefreshing(true);
+    try {
+      const results = await Promise.all(days.map(async (d)=>{
+        const urls = scoreboardUrlsForDate(d);
+        const data = await fetchFirstOk(urls, { signal: controller.signal });
+        const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+        return { day:d, games };
+      }));
+      setGamesByDate((prev)=>{
+        let next = background ? { ...prev } : {};
+        for (const {day, games} of results) next = mergeDay(next, day, games);
+        return next;
+      });
+    } catch(e){
+      if(e.name!=="AbortError" && !background) setError(e.message || "Failed to load scores");
+    } finally { if(!background) setLoading(false); setRefreshing(false); }
   }
 
-  async function refreshWeekBackground(){
-    setRefreshing(true);
-    const days = weekDays;
-    await Promise.allSettled(days.map((d)=>fetchDay(d, { background:true })));
-    setRefreshing(false);
-  }
-
-  useEffect(()=>{ fetchScoresInitial(); }, [weekStart]);
+  useEffect(()=>{ fetchScoresWeek(weekDays); }, [weekStart]); // eslint-disable-line
   useEffect(()=>{
-    const id = setInterval(()=>{ if(document.visibilityState==="visible") refreshWeekBackground(); }, 60000);
-    const onVis = () => { if(document.visibilityState==="visible") refreshWeekBackground(); };
+    const id = setInterval(()=>{ if(document.visibilityState==="visible") fetchScoresWeek(weekDays, { background:true }); }, 45000);
+    const onVis = () => { if(document.visibilityState==="visible") fetchScoresWeek(weekDays, { background:true }); };
     document.addEventListener("visibilitychange", onVis);
     return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [weekStart]); // eslint-disable-line
 
-  function passesFilter(g){
-    if(!g || g.isPostseason) return false;
-    if(filter==="final") return g.isFinal;
-    if(filter==="live") return g.isLive;
-    if(filter==="upcoming") return !g.isFinal && !g.isLive;
-    return true;
-  }
+  function passesFilter(g){ if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
   const flatSorted = useMemo(()=>{
     const all = weekDays.flatMap((d)=> (gamesByDate[d]||[]) );
-    // De-dupe by id in case ESPN returns a duplicate across days
-    const byId = new Map();
-    for(const g of all){ if(!g || !g.id) continue; if(!byId.has(g.id)) byId.set(g.id, g); }
-    return Array.from(byId.values()).filter(passesFilter).sort((a,b)=> new Date(a.date) - new Date(b.date));
+    return all.filter(passesFilter).slice().sort((a,b)=> new Date(a.date) - new Date(b.date) );
   }, [gamesByDate, weekDays, filter]);
 
   const weekLabel = useMemo(()=>{
-    const start = parseDate(weekStart); const end = parseDate(addDays(weekStart,6));
+    const start = new Date(weekStart); const end = new Date(parseDate(addDays(weekStart,6)));
     const fmt = new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric"});
     return `${fmt.format(start)} – ${fmt.format(end)}`;
   }, [weekStart]);
@@ -372,7 +339,7 @@ function ScoresPanel({ date, setDate, tz }) {
       <div className="controls" style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
         <button className="btn" onClick={()=>setDate(addDays(weekStart,-7))}>← Prev Week</button>
         <div className="row" style={{display:"flex",gap:12,alignItems:"center"}}>
-          <span style={{fontWeight:600}}>{weekLabel}</span>
+          <span style={{fontWeight:600}}>Week of {weekLabel}</span>
           <select className="input" value={filter} onChange={(e)=>setFilter(e.target.value)}>
             <option value="all">All</option><option value="live">Live</option><option value="upcoming">Upcoming</option><option value="final">Final</option>
           </select>
@@ -385,7 +352,7 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       </div>
 
-      {loading && <div style={{ color:"#475569" }}>Loading games…</div>}
+      {loading && <div style={{ color:"#475569" }}>Loading scores…</div>}
       {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
       {!loading && !error && flatSorted.length === 0 && (
@@ -396,7 +363,7 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       )}
 
-      {!error && flatSorted.map((g)=>{
+      {!loading && !error && flatSorted.map((g)=>{
         const showLead = g.isLive || g.isFinal;
         const homeScore = typeof g.home.score === "number" ? g.home.score : null;
         const awayScore = typeof g.away.score === "number" ? g.away.score : null;
@@ -404,14 +371,12 @@ function ScoresPanel({ date, setDate, tz }) {
         const awayLeading = showLead && homeScore != null && awayScore != null && awayScore > homeScore;
         const stadiumUrl = getStadiumUrlForTeam(g.home.abbr);
         return (
-          <div key={g.id} className="card gamecard" style={{ display:"grid", gap:12 }}>
-            <div className="teams-pane" style={{ padding:12, display:"grid", gap:10 }}>
+          <div key={g.id} className="card" style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:12 }}>
+            <div style={{ padding:12, display:"grid", gap:10 }}>
               <TeamRowWithScore team={g.home} role="home" leading={homeLeading} size={32} />
               <TeamRowWithScore team={g.away} role="away" leading={awayLeading} size={32} />
             </div>
-
-            {/* Desktop / tablet details (right column) */}
-            <div className="details-pane" style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
+            <div style={{ padding:12, display:"grid", gap:10, alignContent:"start", borderLeft:"1px solid #e2e8f0" }}>
               <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                 <span style={{fontSize:12,color:"#64748b"}}>Status:</span>
                 <StatusPill game={g} />{g.isPreseason && <Pill>Preseason</Pill>}
@@ -421,34 +386,7 @@ function ScoresPanel({ date, setDate, tz }) {
                 {new Date(g.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}{" "}
                 {prettyTime(g.date, tz)}
               </div>
-              <div style={{ fontSize:"0.85em" }}><span className="label">Location:</span>{" "}{stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}</div>
-            </div>
-
-            {/* Mobile-only compact details table (below teams) */}
-            <div className="details-mobile" style={{ padding:"0 12px 12px 12px" }}>
-              <table className="mobile-table" style={{ width:"100%", borderCollapse:"collapse", fontSize:14 }}>
-                <tbody>
-                  <tr>
-                    <th style={{ textAlign:"left", padding:"8px 0", color:"#64748b", width:"32%" }}>Status</th>
-                    <td style={{ padding:"8px 0" }}>
-                      <StatusPill game={g} />{g.isPreseason && <span style={{ marginLeft:8 }}><Pill>Preseason</Pill></span>}
-                    </td>
-                  </tr>
-                  <tr>
-                    <th style={{ textAlign:"left", padding:"8px 0", color:"#64748b" }}>Kickoff</th>
-                    <td style={{ padding:"8px 0" }}>
-                      {new Date(g.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}{" "}
-                      {prettyTime(g.date, tz)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <th style={{ textAlign:"left", padding:"8px 0", color:"#64748b" }}>Location</th>
-                    <td style={{ padding:"8px 0" }}>
-                      {stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+              <div style={{ fontSize:"0.85em" }}><span className="label">Location:</span> {stadiumUrl ? (<a href={stadiumUrl} target="_blank" rel="noopener noreferrer" style={{ textDecoration:"underline" }}>{g.venue || "—"}</a>) : (g.venue || "—")}</div>
             </div>
           </div>
         );
@@ -489,6 +427,7 @@ function tallyFromEvents(events, table){
     else { table[home].w++; table[away].l++; }
   }
 }
+
 
 async function hasFinalsForWeek(season, week, signal){
   try{
@@ -539,36 +478,31 @@ function StandingsPanel({ season }) {
 
   useEffect(()=>{
     let live = true;
-
-    // Use cache instantly if available
-    const ck = `nfl_standings_${season}_v1`;
-    const cached = lc.get(ck);
-    if (cached) setDivisions(cached);
-
-    async function load({ background=false } = {}){
-      if(!background){ setLoading(!cached); setError(""); } else setRefreshing(true);
-      try {
-        const controller = new AbortController();
-        const upto = await discoverMaxCompletedWeek(season, controller.signal);
-        const tasks = [];
-        for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
-          tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
-        }
-        const weeks = await limitConcurrency(tasks, 6);
-        const table = {}; // abbr -> {team, w,l,t}
+    
+  async function load({ background=false } = {}){
+    if(!background){ setLoading(true); setError(""); } else setRefreshing(true);
+    try {
+      const controller = new AbortController();
+      const upto = await discoverMaxCompletedWeek(season, controller.signal);
+      const tasks = [];
+      for(let w=1; w<=Math.max(0, Math.min(18, upto)); w++){
+        tasks.push(()=> fetchWeekScoreboard(season, w, controller.signal).catch(()=>null));
+      }
+      const weeks = await limitConcurrency(tasks, 6);
+      const table = {}; // abbr -> {team, w,l,t}
         for(const wk of weeks){
           if(!wk) continue;
           tallyFromEvents((wk && wk.events) || [], table);
         }
         const groups = Object.entries(DIVISIONS).map(([name, abbrs])=>{
           const teams = abbrs.map((abbr)=>{
-            const row = table[abbr] || { team: { abbr, name: TEAM_FULL[abbr], logo: `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png` }, w:0,l:0,t:0 };
+            const row = table[abbr] || { team: { abbr, name: TEAM_FULL[abbr], logo: fallbackLogoForAbbr(abbr) }, w:0,l:0,t:0 };
             const tm = row.team;
             return {
               id: tm.id || abbr,
               name: TEAM_FULL[abbr] || tm.name || abbr,
               abbr,
-              logo: tm.logo || `https://a.espncdn.com/i/teamlogos/nfl/500/${abbr.toLowerCase()}.png`,
+              logo: tm.logo || fallbackLogoForAbbr(abbr),
               page: TEAM_URLS[abbr] || tm.page,
               w: row.w, l: row.l, t: row.t,
               pct: pct(row.w,row.l,row.t),
@@ -576,10 +510,7 @@ function StandingsPanel({ season }) {
           }).sort((a,b)=> b.pct - a.pct || b.w - a.w || a.l - b.l || a.name.localeCompare(b.name));
           return { name, teams };
         });
-        if(live){
-          setDivisions(groups);
-          lc.set(ck, groups, 10*60*1000); // cache for 10 minutes
-        }
+        if(live) setDivisions(groups);
       } catch(e){
         if(live && !background) setError(e.message || "Failed to load standings");
       } finally {
@@ -587,17 +518,16 @@ function StandingsPanel({ season }) {
         setRefreshing(false);
       }
     }
-    // kick it off
     load();
     const id = setInterval(()=>{ if(document.visibilityState==="visible") load({ background:true }); }, 5*60*1000);
     const onVis = () => { if(document.visibilityState==="visible") load({ background:true }); };
     document.addEventListener("visibilitychange", onVis);
-    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); live=false; };
+    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [season]);
 
   return (
     <div style={{ display:"grid", gap:12 }}>
-      <h2 style={{ margin: 0 }}>Standings · {season}</h2>
+      <h2 style={{ margin: 0 }}>Standings · {season} (Regular Season, local aggregation)</h2>
       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
         <span style={{ color:"#64748b", fontSize:12 }}>Built from ESPN weekly scoreboards (final games only). Preseason excluded.</span>
         {refreshing && <span className="pill pill-mini">Updating…</span>}
@@ -610,20 +540,21 @@ function StandingsPanel({ season }) {
           <div style={{ background:"#f8fafc", padding:"10px 12px", borderBottom:"1px solid #e2e8f0" }}><strong>{d.name}</strong></div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14, tableLayout:"fixed" }}>
-              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/></colgroup>
-              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th></tr></thead>
+              <colgroup><col/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:64}}/><col style={{width:80}}/></colgroup>
+              <thead><tr style={{ color:"#64748b", textAlign:"left" }}><th style={{padding:8}}>Team</th><th style={numCell}>W</th><th style={numCell}>L</th><th style={numCell}>T</th><th style={numCell}>Pct</th></tr></thead>
               <tbody>
                 {d.teams.map((t)=>(
                   <tr key={t.id || t.name} style={{ borderTop:"1px solid #e2e8f0" }}>
                     <td style={{ padding:8 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:8, minWidth:0 }}>
-                        <img loading="lazy" decoding="async" fetchpriority="low" src={t.logo} alt="logo" style={{width:20,height:20,objectFit:"contain",display:"block"}} />
+                        <TeamLogo href={t.logo} abbr={t.abbr} size={20} />
                         <a href={t.page || "#"} target="_blank" rel="noopener noreferrer" style={{ fontWeight:600, color:"inherit", textDecoration:"none" }}>{t.name}</a>
                       </div>
                     </td>
                     <td style={numCell}>{t.w}</td>
                     <td style={numCell}>{t.l}</td>
                     <td style={numCell}>{t.t}</td>
+                    <td style={numCell}>{t.pct.toFixed(3).replace("0.", ".")}</td>
                   </tr>
                 ))}
               </tbody>
@@ -672,18 +603,6 @@ export default function App(){
       .scorepill-leading{background:#0f172a;color:#fff}
       .label{font-size:12px;color:#64748b}
       table { font-family: var(--font-stack); }
-
-      /* Responsive layout */
-      .gamecard { grid-template-columns: 1fr 300px; }
-      .details-mobile { display: none; }
-
-      @media (max-width: 640px) {
-        .gamecard { grid-template-columns: 1fr; }
-        .details-pane { display: none !important; }
-        .details-mobile { display: block !important; }
-        .teams-pane { padding-bottom: 0 !important; }
-        .mobile-table tr + tr td, .mobile-table tr + tr th { border-top: 1px solid #e2e8f0; }
-      }
     `;
     document.head.appendChild(base);
     return ()=>{ try{ document.head.removeChild(base);}catch{} };
@@ -695,7 +614,7 @@ export default function App(){
         <header style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
             <h1 style={{ fontSize:28, margin:0 }}>NFL Daily Dashboard</h1>
-            <div style={{ color:"#64748b" }}>Scores & Standings</div>
+            <div style={{ color:"#64748b" }}>Scores & Standings (preseason labeled; excluded from standings)</div>
           </div>
           <Tabs value={tab} onChange={setTab} />
         </header>
@@ -704,7 +623,7 @@ export default function App(){
           {tab==="standings" && <StandingsPanel season={season} />}
         </main>
         <footer style={{ marginTop:16, fontSize:12, color:"#64748b" }}>
-          Data via ESPN weekly scoreboards; preseason games are shown in Scores but excluded from Standings.
+          Data via ESPN weekly scoreboards; preseason games are marked and excluded from standings.
         </footer>
       </div>
     </div>
