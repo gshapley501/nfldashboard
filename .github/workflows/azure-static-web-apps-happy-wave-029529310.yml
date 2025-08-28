@@ -1,38 +1,17 @@
-name: Azure Static Web Apps CI/CD
+1. git init
+2. git checkout dev
+3. git add .
+4. git commit -m "notes"
+5. git push origin dev (this pushes local to remote dev branch)
+6. Finish pull requests in Github.  Monitor deployment in Azure.
+7. Sync remote changes back to local
+8. git fetch origin
+9. git checkout main
+10. git pull (syncs remote main to local main)
+11. git status (make sure remote and local up to date)
 
-on:
-  push:
-    branches:
-      - main
-  pull_request:
-    types: [opened, synchronize, reopened, closed]
-    branches:
-      - main
 
-jobs:
-  build_and_deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+use git push --force origin main
 
-      - name: Install
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Deploy to Azure Static Web Apps
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_HAPPY_WAVE_029529310 }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          action: "upload"
-          app_location: "/"          # where package.json lives
-          api_location: "api"           # set to "api" if you use one
-          output_location: "dist"    # Vite's build output
+https://happy-wave-029529310.1.azurestaticapps.net
