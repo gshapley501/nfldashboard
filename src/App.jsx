@@ -1,7 +1,31 @@
-//update mobile view
-//remove "Week of"
+// update mobile view
+// remove "Week of"
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+
+/* ------------------------------------------------------------------ */
+/* Tiny SWR cache for instant “revisit” loads (RAM + sessionStorage)   */
+/* ------------------------------------------------------------------ */
+const RAM_CACHE = new Map(); // key -> { ts, data }
+const CACHE_TTL_MS = 60_000; // 60s default; tweak as you like
+
+function cacheKey(day){ return `scores::${day}`; }
+function readCache(day){
+  const k = cacheKey(day);
+  const now = Date.now();
+  let hit = RAM_CACHE.get(k);
+  if (!hit) {
+    try { hit = JSON.parse(sessionStorage.getItem(k) || "null"); } catch {}
+  }
+  if (hit && (now - hit.ts) < CACHE_TTL_MS) return hit.data;
+  return null;
+}
+function writeCache(day, data){
+  const k = cacheKey(day);
+  const val = { ts: Date.now(), data };
+  RAM_CACHE.set(k, val);
+  try { sessionStorage.setItem(k, JSON.stringify(val)); } catch {}
+}
 
 /** Endpoint helpers (proxied) */
 // Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
@@ -16,12 +40,13 @@ function _ttlForEspnUrl(espnUrl){
         const today = new Date();
         const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const diff = Math.floor((day - start)/86400000);
-        if (diff < -1) return 86400; // 1 day (past)
-        if (diff === -1) return 300; // 5 min (yesterday)
-        if (diff === 0) return 30;   // 30s   (todayP
-        return 60;                  // 60s future
+        // Tuned TTLs: longer for past/future, shorter for today
+        if (diff < -1) return 21600; // 6h (past weeks)
+        if (diff === -1) return 300;  // 5m (yesterday)
+        if (diff === 0) return 30;    // 30s (today, live-ish)
+        return 300;                   // 5m (future)
       }
-      return 600;
+      return 600;                      // default scoreboard TTL
     }
   }catch{}
   return 60;
@@ -98,7 +123,7 @@ function TeamLogo({ href, abbr, size = 28 }) {
   const src = (!href || bad) ? fallbackLogoForAbbr(abbr) : href;
   const box = { width:size, height:size, borderRadius:size/2, background:"#f1f5f9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700 };
   if(!src) return <div style={box}>{abbr?.slice(0,3)||""}</div>;
-  return <img src={src} alt="logo" style={{width:size,height:size,objectFit:"contain",display:"block"}} onError={()=>setBad(true)} />;
+  return <img loading="lazy" src={src} alt="logo" style={{width:size,height:size,objectFit:"contain",display:"block"}} onError={()=>setBad(true)} />;
 }
 
 /** Stadium links */
@@ -249,7 +274,7 @@ function simplifyEspnEvent(ev) {
 }
 
 /* SCORES */
-function TeamRowWithScore({ team, role, leading, size = 32 }) {
+const TeamRowWithScore = React.memo(function TeamRowWithScore({ team, role, leading, size = 32 }) {
   return (
     <div className="teamline" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -269,7 +294,7 @@ function TeamRowWithScore({ team, role, leading, size = 32 }) {
       </div>
     </div>
   );
-}
+});
 
 function ScoresPanel({ date, setDate, tz }) {
   const [gamesByDate, setGamesByDate] = useState({});
@@ -295,30 +320,62 @@ function ScoresPanel({ date, setDate, tz }) {
   async function fetchScoresWeek(days, { background=false } = {}){
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController(); abortRef.current = controller;
-    if (!background){ setLoading(true); setError(""); } else setRefreshing(true);
+
+    if (!background) { setLoading(true); setError(""); } else setRefreshing(true);
+
+    // Serve cached data instantly (then revalidate)
+    let showedCache = false;
+    if (!background){
+      setGamesByDate(prev => {
+        let next = {};
+        for (const d of days) {
+          const cached = readCache(d);
+          if (cached) { showedCache = true; next[d] = cached; }
+        }
+        return showedCache ? next : prev;
+      });
+      if (showedCache) setLoading(false);
+    }
+
     try {
       const results = await Promise.all(days.map(async (d)=>{
         const urls = scoreboardUrlsForDate(d);
         const data = await fetchFirstOk(urls, { signal: controller.signal });
         const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+        writeCache(d, games);
         return { day:d, games };
       }));
       setGamesByDate((prev)=>{
-        let next = background ? { ...prev } : {};
+        let next = background ? { ...prev } : (showedCache ? { ...prev } : {});
         for (const {day, games} of results) next = mergeDay(next, day, games);
         return next;
       });
     } catch(e){
       if(e.name!=="AbortError" && !background) setError(e.message || "Failed to load scores");
-    } finally { if(!background) setLoading(false); setRefreshing(false); }
+    } finally {
+      if(!background && !showedCache) setLoading(false);
+      setRefreshing(false);
+    }
   }
 
   useEffect(()=>{ fetchScoresWeek(weekDays); }, [weekStart]); // eslint-disable-line
+
+  // Gentler background refresh: only when visible, prefer idle time
   useEffect(()=>{
-    const id = setInterval(()=>{ if(document.visibilityState==="visible") fetchScoresWeek(weekDays, { background:true }); }, 45000);
-    const onVis = () => { if(document.visibilityState==="visible") fetchScoresWeek(weekDays, { background:true }); };
-    document.addEventListener("visibilitychange", onVis);
-    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+    let id;
+    const kick = () => {
+      if (document.visibilityState === "visible") {
+        if ("requestIdleCallback" in window) {
+          // @ts-ignore
+          requestIdleCallback(()=>fetchScoresWeek(weekDays, { background:true }), { timeout: 2000 });
+        } else {
+          fetchScoresWeek(weekDays, { background:true });
+        }
+      }
+    };
+    id = setInterval(kick, 45_000);
+    document.addEventListener("visibilitychange", kick);
+    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", kick); };
   }, [weekStart]); // eslint-disable-line
 
   function passesFilter(g){ if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
@@ -351,6 +408,7 @@ function ScoresPanel({ date, setDate, tz }) {
         </div>
       </div>
 
+      {/* If we showed cache, keep UI up with small updates; no big spinner */}
       {loading && <div style={{ color:"#475569" }}>Loading scores…</div>}
       {error && <div style={{ border:"1px solid #fecaca", background:"#fef2f2", color:"#b91c1c", padding:12, borderRadius:12 }}>{error}</div>}
 
@@ -622,7 +680,7 @@ export default function App(){
       .label{font-size:12px;color:#64748b}
       table { font-family: var(--font-stack); }
 
-      /* NEW: responsive grid for game cards */
+      /* responsive grid for game cards */
       .gamegrid { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
       .game-meta { border-left: 1px solid #e2e8f0; }
       .game-meta-box { /* styled only on mobile via media query */ }
