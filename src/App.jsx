@@ -51,13 +51,13 @@ function _ttlForEspnUrl(espnUrl){
 function proxify(u){
   if(typeof u !== 'string') return u;
   if(u.startsWith('/espn/')){
-    const tail = u.replace(/^\\/espn/, '');
+    const tail = u.replace(/^\/espn/, '');
     const espn = 'https://site.api.espn.com' + tail;
     const h = _ttlForEspnUrl(espn);
     return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
   }
   if(u.startsWith('/espn-site/')){
-    const tail = u.replace(/^\\/espn-site/, '');
+    const tail = u.replace(/^\/espn-site/, '');
     const espn = 'https://site.api.espn.com' + tail;
     const h = _ttlForEspnUrl(espn);
     return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
