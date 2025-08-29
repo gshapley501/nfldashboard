@@ -410,7 +410,6 @@ function ScoresPanel({ date, setDate, tz }) {
     }
   }
 
-  }
 
   useEffect(()=>{ fetchScoresWeek(weekDays); }, [weekStart]); // eslint-disable-line
   useEffect(()=>{
