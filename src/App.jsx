@@ -317,25 +317,22 @@ function TeamRowWithScore({ team, role, leading, size = 32 }) {
 }
 
 function ScoresPanel({ date, setDate, tz }) {
-  const [gamesByDate, setGamesByDate] = useState({});
-  const [loading, setLoading] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
-  const [filter, setFilter] = useState("all");
-  const abortRef = useRef(null);
-  const weekStart = useMemo(() => startOfWeekISO(date, 4), [date]); // Thursday (NFL week)
-  const weekDays = useMemo(() => range7(weekStart), [weekStart]);
-
   useEffect(() => {
-    function onKey(e){ if(e.key==="ArrowLeft") setDate((d)=>addDays(d,-7)); if(e.key==="ArrowRight") setDate((d)=>addDays(d,7)); }
-    window.addEventListener("keydown", onKey); 
-  useEffect(()=>{
+    function onKey(e){
+      if (e.key === "ArrowLeft") setDate((d) => addDays(d, -7));
+      if (e.key === "ArrowRight") setDate((d) => addDays(d, 7));
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setDate]);
+
+  // Persist whole-week cache whenever games change
+  useEffect(() => {
     if (gamesByDate && Object.keys(gamesByDate).length) {
       try { writeWeekCache(weekStart, gamesByDate); } catch {}
     }
   }, [gamesByDate, weekStart]);
-return () => window.removeEventListener("keydown", onKey);
-  }, [setDate]);
+
 
   function mergeDay(prev, day, nextGames){
     const arr = prev[day] || []; const map = new Map(arr.map((g)=>[g.id,g]));
