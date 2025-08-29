@@ -1,6 +1,5 @@
 //update mobile view
 //remove "Week of"
-//Improve performance
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
@@ -413,22 +412,7 @@ return () => window.removeEventListener("keydown", onKey);
       setRefreshing(false);
     }
   }
-else setRefreshing(true);
-    try {
-      const results = await Promise.all(days.map(async (d)=>{
-        const urls = scoreboardUrlsForDate(d);
-        const data = await fetchFirstOk(urls, { signal: controller.signal });
-        const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
-        return { day:d, games };
-      }));
-      setGamesByDate((prev)=>{
-        let next = background ? { ...prev } : {};
-        for (const {day, games} of results) next = mergeDay(next, day, games);
-        return next;
-      });
-    } catch(e){
-      if(e.name!=="AbortError" && !background) setError(e.message || "Failed to load scores");
-    } finally { if(!background) setLoading(false); setRefreshing(false); }
+
   }
 
   useEffect(()=>{ fetchScoresWeek(weekDays); }, [weekStart]); // eslint-disable-line
