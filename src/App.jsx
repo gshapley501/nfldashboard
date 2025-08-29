@@ -3,6 +3,24 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
+class ErrorBoundary extends React.Component {
+  constructor(props){ super(props); this.state = { hasError: false, error: null }; }
+  static getDerivedStateFromError(error){ return { hasError: true, error }; }
+  componentDidCatch(error, info){ console.error("App crashed:", error, info); }
+  render(){
+    if (this.state.hasError) {
+      return (
+        <div style={{padding:16}}>
+          <h2>Something went wrong.</h2>
+          <pre style={{whiteSpace:"pre-wrap"}}>{String(this.state.error)}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+
 /** Endpoint helpers (proxied) */
 // Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
 function _ttlForEspnUrl(espnUrl){
@@ -312,7 +330,7 @@ function TeamRowWithScore({ team, role, leading, size = 32 }) {
       <div className={"scorepill" + (leading ? " scorepill-leading" : "")} style={{minWidth:36,textAlign:"center",border:"1px solid #e2e8f0",borderRadius:10,padding:"4px 8px",fontWeight:700}}>
         {team.score ?? "-"}
       </div>
-    </div>
+    </div></ErrorBoundary>
   );
 }
 
@@ -497,7 +515,7 @@ function ScoresPanel({ date, setDate, tz }) {
           </div>
         );
       })}
-    </div>
+    </div></ErrorBoundary>
   );
 }
 
@@ -665,7 +683,7 @@ function StandingsPanel({ season }) {
           </div>
         </div>
       ))}
-    </div>
+    </div></ErrorBoundary>
   );
 }
 
@@ -678,8 +696,13 @@ function Tabs({ value, onChange }) {
         <button key={it.id} onClick={()=>onChange(it.id)} className="btn"
           style={{ background:value===it.id?"#0f172a":"#fff", color:value===it.id?"#fff":"#0f172a", borderColor:"#e2e8f0" }}>{it.label}</button>
       ))}
-    </div>
+    </div></ErrorBoundary>
   );
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (e) => console.error("window error:", e.error || e.message));
+  window.addEventListener("unhandledrejection", (e) => console.error("unhandledrejection:", e.reason));
 }
 
 export default function App(){
@@ -728,7 +751,7 @@ export default function App(){
   },[]);
 
   return (
-    <div style={{ minHeight:"100vh" }}>
+    <ErrorBoundary><div style={{ minHeight:"100vh" }}>
       <div className="container">
         <header style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:12, flexWrap:"wrap" }}>
           <div>
@@ -745,6 +768,6 @@ export default function App(){
           Data via ESPN weekly scoreboards; preseason games are marked and excluded from standings.
         </footer>
       </div>
-    </div>
+    </div></ErrorBoundary>
   );
 }
