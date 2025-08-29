@@ -554,19 +554,6 @@ async function discoverMaxCompletedWeek(season, signal){
   }
   return ans;
 }
-function limitConcurrency(tasks, n){
-  let i=0, active=0; const out=new Array(tasks.length);
-  return new Promise((resolve)=>{
-    const next=()=>{
-      if(i===tasks.length && active===0) return resolve(Promise.all(out));
-      while(active<n && i<tasks.length){
-        const idx=i++; active++;
-        out[idx]=tasks[idx]().finally(()=>{ active--; next(); });
-      }
-    };
-    next();
-  });
-}
 function StandingsPanel({ season }) {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
