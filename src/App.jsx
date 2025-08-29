@@ -1,7 +1,28 @@
-//update mobile view
-//remove "Week of"
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
+
+/* ------------------------------------------------------------------ */
+/* Tiny SWR cache for instant “revisit” loads (RAM + sessionStorage)   */
+/* ------------------------------------------------------------------ */
+const RAM_CACHE = new Map(); // key -> { ts, data }
+const CACHE_TTL_MS = 60_000; // 60s default; tweak as you like
+
+function cacheKey(day){ return `scores::${day}`; }
+function readCache(day){
+  const k = cacheKey(day);
+  const now = Date.now();
+  let hit = RAM_CACHE.get(k);
+  if (!hit) {
+    try { hit = JSON.parse(sessionStorage.getItem(k) || "null"); } catch {}
+  }
+  if (hit && (now - hit.ts) < CACHE_TTL_MS) return hit.data;
+  return null;
+}
+function writeCache(day, data){
+  const k = cacheKey(day);
+  const val = { ts: Date.now(), data };
+  RAM_CACHE.set(k, val);
+  try { sessionStorage.setItem(k, JSON.stringify(val)); } catch {}
+}
 
 /** Endpoint helpers (proxied) */
 // Convert /espn* into /api/proxy?soft=1&u=<encoded>&h=<ttl>
@@ -10,18 +31,19 @@ function _ttlForEspnUrl(espnUrl){
     const u = new URL(espnUrl);
     if(u.pathname.includes('/scoreboard')){
       const d = u.searchParams.get('dates');
-      if(d && /^\d{8}$/.test(d)){
+      if(d && /^\\d{8}$/.test(d)){
         const Y=+d.slice(0,4), M=+d.slice(4,6)-1, D=+d.slice(6,8);
         const day = new Date(Date.UTC(Y,M,D));
         const today = new Date();
         const start = new Date(today.getFullYear(), today.getMonth(), today.getDate());
         const diff = Math.floor((day - start)/86400000);
-        if (diff < -1) return 86400; // 1 day (past)
-        if (diff === -1) return 300; // 5 min (yesterday)
-        if (diff === 0) return 30;   // 30s   (todayP
-        return 60;                  // 60s future
+        // Tuned TTLs: longer for past/future, shorter for today
+        if (diff < -1) return 21600; // 6h (past weeks)
+        if (diff === -1) return 300;  // 5m (yesterday)
+        if (diff === 0) return 30;    // 30s (today, live-ish)
+        return 300;                   // 5m (future)
       }
-      return 600;
+      return 600;                      // default scoreboard TTL
     }
   }catch{}
   return 60;
@@ -29,13 +51,13 @@ function _ttlForEspnUrl(espnUrl){
 function proxify(u){
   if(typeof u !== 'string') return u;
   if(u.startsWith('/espn/')){
-    const tail = u.replace(/^\/espn/, '');
+    const tail = u.replace(/^\\/espn/, '');
     const espn = 'https://site.api.espn.com' + tail;
     const h = _ttlForEspnUrl(espn);
     return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
   }
   if(u.startsWith('/espn-site/')){
-    const tail = u.replace(/^\/espn-site/, '');
+    const tail = u.replace(/^\\/espn-site/, '');
     const espn = 'https://site.api.espn.com' + tail;
     const h = _ttlForEspnUrl(espn);
     return `/api/proxy?soft=1&h=${h}&u=${encodeURIComponent(espn)}`;
@@ -98,7 +120,7 @@ function TeamLogo({ href, abbr, size = 28 }) {
   const src = (!href || bad) ? fallbackLogoForAbbr(abbr) : href;
   const box = { width:size, height:size, borderRadius:size/2, background:"#f1f5f9", display:"flex", alignItems:"center", justifyContent:"center", fontSize:11, fontWeight:700 };
   if(!src) return <div style={box}>{abbr?.slice(0,3)||""}</div>;
-  return <img src={src} alt="logo" style={{width:size,height:size,objectFit:"contain",display:"block"}} onError={()=>setBad(true)} />;
+  return <img loading="lazy" src={src} alt="logo" style={{width:size,height:size,objectFit:"contain",display:"block"}} onError={()=>setBad(true)} />;
 }
 
 /** Stadium links */
@@ -248,8 +270,181 @@ function simplifyEspnEvent(ev) {
   };
 }
 
+/* ------------------ NFL liveupdate fallback (with logos/venues) ------------------ */
+const TEAM_LOGO_URL = (abbr) =>
+  `https://a.espncdn.com/i/teamlogos/nfl/500/${String(abbr || "").toLowerCase()}.png`;
+
+const STADIUM_NAMES = {
+  ARI: "State Farm Stadium",
+  ATL: "Mercedes-Benz Stadium",
+  BAL: "M&T Bank Stadium",
+  BUF: "Highmark Stadium",
+  CAR: "Bank of America Stadium",
+  CHI: "Soldier Field",
+  CIN: "Paycor Stadium",
+  CLE: "Cleveland Browns Stadium",
+  DAL: "AT&T Stadium",
+  DEN: "Empower Field at Mile High",
+  DET: "Ford Field",
+  GB:  "Lambeau Field",
+  HOU: "NRG Stadium",
+  IND: "Lucas Oil Stadium",
+  JAX: "EverBank Stadium",
+  KC:  "GEHA Field at Arrowhead Stadium",
+  LAC: "SoFi Stadium",
+  LAR: "SoFi Stadium",
+  LV:  "Allegiant Stadium",
+  MIA: "Hard Rock Stadium",
+  MIN: "U.S. Bank Stadium",
+  NE:  "Gillette Stadium",
+  NO:  "Caesars Superdome",
+  NYG: "MetLife Stadium",
+  NYJ: "MetLife Stadium",
+  PHI: "Lincoln Financial Field",
+  PIT: "Acrisure Stadium",
+  SEA: "Lumen Field",
+  SF:  "Levi’s Stadium",
+  TB:  "Raymond James Stadium",
+  TEN: "Nissan Stadium",
+  WAS: "Commanders Field",
+};
+
+function getTeamAssets(abbr) {
+  const A = String(abbr || "").toUpperCase();
+  const name = (TEAM_FULL && TEAM_FULL[A]) || A;
+  const page = (TEAM_URLS && TEAM_URLS[A]) || undefined;
+  const logoHref = TEAM_LOGO_URL(A);
+  const venueName = STADIUM_NAMES[A];
+  return { name, page, logoHref, venueName, abbr: A };
+}
+
+function simplifyNflLiveupdateGame(eid, g, dateISO) {
+  const homeRaw = g.home || g.h || {};
+  const awayRaw = g.away || g.a || {};
+
+  const homeAbbr = homeRaw.abbr || homeRaw.ta || "";
+  const awayAbbr = awayRaw.abbr || awayRaw.ta || "";
+
+  const home = getTeamAssets(homeAbbr);
+  const away = getTeamAssets(awayAbbr);
+
+  const qtrRaw = String(g.qtr ?? g.quarter ?? "");
+  const clock = String(g.clock ?? g.time ?? "");
+
+  const qLower = qtrRaw.toLowerCase();
+  const statusName =
+    qLower === "final" ? "final" :
+    qLower === "pregame" ? "pre" : "in";
+
+  const period = /\\d+/.test(qtrRaw)
+    ? parseInt(qtrRaw, 10)
+    : (statusName === "final" ? 4 : 0);
+
+  const mkSide = (sideRaw, sideAssets, homeAway) => ({
+    id: `${eid}-${homeAway}`,
+    homeAway,
+    score: String(sideRaw.score ?? sideRaw.s ?? 0),
+    team: {
+      id: sideAssets.abbr,
+      abbreviation: sideAssets.abbr,
+      displayName: sideAssets.name,
+      shortDisplayName: sideAssets.abbr,
+      logos: [{ href: sideAssets.logoHref }],
+      links: sideAssets.page ? [{ href: sideAssets.page, text: "Official Site" }] : undefined,
+    },
+  });
+
+  return {
+    id: `nfl-${eid}`,
+    uid: `nfl-${eid}`,
+    name: `${away.abbr} @ ${home.abbr}`,
+    date: new Date(dateISO || new Date().toISOString()).toISOString(),
+    status: {
+      clock,
+      displayClock: clock,
+      period,
+      type: {
+        name: statusName,
+        description:
+          statusName === "pre"   ? "Scheduled" :
+          statusName === "final" ? "Final" :
+          (period ? `Q${period}` : "In Progress"),
+        detail: statusName === "final" ? "Final" : (clock || undefined),
+      },
+    },
+    competitions: [
+      {
+        id: `nfl-${eid}`,
+        venue: home.venueName ? { fullName: home.venueName } : undefined,
+        competitors: [
+          mkSide(homeRaw, home, "home"),
+          mkSide(awayRaw, away, "away"),
+        ],
+      },
+    ],
+  };
+}
+
+const NFL_SCORES_URLS = [
+  "https://static.nfl.com/liveupdate/scores/scores.json",
+  "https://www.nfl.com/liveupdate/scores/scores.json",
+];
+
+function proxifyAbs(u, ttlSeconds = 15) {
+  try {
+    const base = `/api/proxy?u=${encodeURIComponent(u)}`;
+    return ttlSeconds ? `${base}&h=${ttlSeconds}` : base;
+  } catch (_) {}
+  return u;
+}
+
+function isTodayLocal(dateISO) {
+  const d = new Date(dateISO);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() &&
+         d.getMonth() === now.getMonth() &&
+         d.getDate() === now.getDate();
+}
+
+async function fetchNflLiveScoreboardIfToday(dateISO, signal) {
+  if (!isTodayLocal(dateISO)) return null; // NFL scores.json is only "today"
+  let lastErr = null;
+  for (const url of NFL_SCORES_URLS) {
+    try {
+      const res = await fetch(proxifyAbs(url, 15), {
+        signal,
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`NFL feed ${res.status}`);
+      const raw = await res.json(); // object keyed by game EID
+      const events = Object.entries(raw).map(([eid, g]) =>
+        simplifyNflLiveupdateGame(eid, g, dateISO)
+      );
+      if (events.length) return events;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  if (lastErr) console.debug("NFL first-hop failed; falling back to ESPN:", lastErr);
+  return null;
+}
+
+/* ESPN fetch for a single day -> events[] */
+async function fetchEspnScoreboardDay(dateISO, signal){
+  const urls = scoreboardUrlsForDate(dateISO);
+  const data = await fetchFirstOk(urls, { signal });
+  return (data && data.events) || [];
+}
+
+/* Smart fetch: NFL (today) -> ESPN fallback; returns events[] */
+async function fetchScoreboardSmart(dateISO, signal) {
+  const nfl = await fetchNflLiveScoreboardIfToday(dateISO, signal);
+  if (Array.isArray(nfl) && nfl.length) return nfl;
+  return await fetchEspnScoreboardDay(dateISO, signal);
+}
+
 /* SCORES */
-function TeamRowWithScore({ team, role, leading, size = 32 }) {
+const TeamRowWithScore = React.memo(function TeamRowWithScore({ team, role, leading, size = 32 }) {
   return (
     <div className="teamline" style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
       <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -269,7 +464,7 @@ function TeamRowWithScore({ team, role, leading, size = 32 }) {
       </div>
     </div>
   );
-}
+});
 
 function ScoresPanel({ date, setDate, tz }) {
   const [gamesByDate, setGamesByDate] = useState({});
@@ -295,31 +490,61 @@ function ScoresPanel({ date, setDate, tz }) {
   async function fetchScoresWeek(days, { background=false } = {}){
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController(); abortRef.current = controller;
-    if (!background){ setLoading(true); setError(""); } else setRefreshing(true);
+
+    if (!background) { setLoading(true); setError(""); } else setRefreshing(true);
+
+    // Serve cached data instantly (then revalidate)
+    let showedCache = false;
+    if (!background){
+      setGamesByDate(prev => {
+        let next = {};
+        for (const d of days) {
+          const cached = readCache(d);
+          if (cached) { showedCache = true; next[d] = cached; }
+        }
+        return showedCache ? next : prev;
+      });
+      if (showedCache) setLoading(false);
+    }
+
     try {
       const results = await Promise.all(days.map(async (d)=>{
-        const urls = scoreboardUrlsForDate(d);
-        const data = await fetchFirstOk(urls, { signal: controller.signal });
-        const games = (data?.events || []).map((ev)=>simplifyEspnEvent(ev));
+        const events = await fetchScoreboardSmart(d, controller.signal);
+        const games = events.map((ev)=>simplifyEspnEvent(ev));
+        writeCache(d, games);
         return { day:d, games };
       }));
       setGamesByDate((prev)=>{
-        let next = background ? { ...prev } : {};
+        let next = background ? { ...prev } : (showedCache ? { ...prev } : {});
         for (const {day, games} of results) next = mergeDay(next, day, games);
         return next;
       });
     } catch(e){
       if(e.name!=="AbortError" && !background) setError(e.message || "Failed to load scores");
-    } finally { if(!background) setLoading(false); setRefreshing(false); }
+    } finally {
+      if(!background && !showedCache) setLoading(false);
+      setRefreshing(false);
+    }
   }
 
-  useEffect(()=>{ fetchScoresWeek(weekDays); }, [weekStart]); // eslint-disable-line
+  useEffect(()=>{ fetchScoresWeek(weekDays); }, [weekStart]);
+
+  // Gentler background refresh: only when visible, prefer idle time
   useEffect(()=>{
-    const id = setInterval(()=>{ if(document.visibilityState==="visible") fetchScoresWeek(weekDays, { background:true }); }, 45000);
-    const onVis = () => { if(document.visibilityState==="visible") fetchScoresWeek(weekDays, { background:true }); };
-    document.addEventListener("visibilitychange", onVis);
-    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [weekStart]); // eslint-disable-line
+    let id;
+    const kick = () => {
+      if (document.visibilityState === "visible") {
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(()=>fetchScoresWeek(weekDays, { background:true }), { timeout: 2000 });
+        } else {
+          fetchScoresWeek(weekDays, { background:true });
+        }
+      }
+    };
+    id = setInterval(kick, 45_000);
+    document.addEventListener("visibilitychange", kick);
+    return ()=>{ clearInterval(id); document.removeEventListener("visibilitychange", kick); };
+  }, [weekStart]);
 
   function passesFilter(g){ if(filter==="final") return g.isFinal; if(filter==="live") return g.isLive; if(filter==="upcoming") return !g.isFinal && !g.isLive; return true; }
   const flatSorted = useMemo(()=>{
@@ -622,7 +847,7 @@ export default function App(){
       .label{font-size:12px;color:#64748b}
       table { font-family: var(--font-stack); }
 
-      /* NEW: responsive grid for game cards */
+      /* responsive grid for game cards */
       .gamegrid { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
       .game-meta { border-left: 1px solid #e2e8f0; }
       .game-meta-box { /* styled only on mobile via media query */ }
@@ -657,7 +882,7 @@ export default function App(){
           {tab==="standings" && <StandingsPanel season={season} />}
         </main>
         <footer style={{ marginTop:16, fontSize:12, color:"#64748b" }}>
-          Data via ESPN weekly scoreboards; preseason games are marked and excluded from standings.
+          Data via NFL (today) and ESPN scoreboards; preseason games are marked and excluded from standings.
         </footer>
       </div>
     </div>
